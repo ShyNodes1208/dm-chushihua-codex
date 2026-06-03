@@ -1,0 +1,20 @@
+{
+  "instances": [
+    {
+      "label": "笔记本测试",
+      "host": "192.168.56.1"
+    }
+  ],
+  "defaults": {
+    "port": 5236,
+    "user": "SYSDBA",
+    "password": "Sysdba_262351"
+  },
+  "sql_dir": "./sql_templates",
+  "cache_dir": "./cache",
+  "page_size": 10,
+  "server": {
+    "host": "127.0.0.1",
+    "port": 5000
+  }
+}

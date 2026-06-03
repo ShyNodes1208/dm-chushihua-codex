@@ -1,0 +1,385 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DM Query Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand">
+      <strong>DM Query</strong>
+      <button id="refreshAllBtn" title="Refresh all">R</button>
+    </div>
+    <nav id="queryList" class="query-list"></nav>
+  </aside>
+
+  <main class="main">
+    <header class="toolbar">
+      <div>
+        <h1 id="queryTitle">Select a query</h1>
+        <p id="queryMeta">Query cache status is shown on the left.</p>
+      </div>
+      <div class="actions">
+        <button id="refreshBtn">Refresh</button>
+        <button id="exportBtn">Export Excel</button>
+        <div class="column-menu">
+          <button id="columnBtn" type="button" aria-expanded="false">Columns</button>
+          <div id="columnPanel" class="column-panel" hidden></div>
+        </div>
+        <input id="searchInput" type="search" placeholder="Search">
+      </div>
+    </header>
+
+    <section id="toast" class="toast" hidden></section>
+    <section id="resultArea" class="result-area">
+      <div class="empty">Select a SQL query from the left.</div>
+    </section>
+    <footer id="pager" class="pager" hidden>
+      <button id="prevPage">Prev</button>
+      <span id="pageInfo"></span>
+      <button id="nextPage">Next</button>
+      <label>Go to <input id="jumpPage" type="number" min="1"> </label>
+    </footer>
+  </main>
+
+  <script>
+    const pageSize = Number({{ page_size|tojson }}) || 10;
+    const state = { queries: [], current: null, cache: null, page: 1, search: "", hiddenColumns: new Set(), columnWidths: {} };
+    const statusText = { valid: "valid", stale: "stale", missing: "missing" };
+    const $ = (id) => document.getElementById(id);
+
+    async function api(url, options = {}) {
+      const res = await fetch(url, options);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Request failed");
+      return data;
+    }
+
+    function showToast(message) {
+      const toast = $("toast");
+      toast.textContent = message;
+      toast.hidden = false;
+      setTimeout(() => toast.hidden = true, 3500);
+    }
+
+    async function loadQueries() {
+      const data = await api("/api/queries");
+      state.queries = data.queries || [];
+      $("queryList").innerHTML = state.queries.map(q => `
+        <button class="query-item ${q.name === state.current ? "active" : ""}" data-name="${escapeAttr(q.name)}">
+          <span class="dot ${escapeAttr(q.status)}"></span>
+          <span>${escapeHtml(q.name)}</span>
+          <small>${escapeHtml(statusText[q.status] || q.status)}</small>
+        </button>
+      `).join("");
+      document.querySelectorAll(".query-item").forEach(btn => {
+        btn.addEventListener("click", () => selectQuery(btn.dataset.name));
+      });
+      if (!state.current && state.queries.length > 0) {
+        await selectQuery(state.queries[0].name);
+      }
+    }
+
+    async function selectQuery(name) {
+      state.current = name;
+      state.page = 1;
+      $("queryTitle").textContent = name;
+      try {
+        state.cache = await api(`/api/query/${encodeURIComponent(name)}`);
+        if (state.cache && state.cache.status === "missing") {
+          $("queryMeta").textContent = "First load, querying now...";
+          await refreshCurrent();
+          return;
+        }
+        render();
+      } catch (err) {
+        if (err.message && err.message.includes("No cache")) {
+          $("queryMeta").textContent = "First load, querying now...";
+          await refreshCurrent();
+          return;
+        }
+        state.cache = null;
+        $("queryMeta").textContent = err.message;
+        $("resultArea").innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
+        $("pager").hidden = true;
+      }
+      await loadQueries();
+    }
+
+    async function refreshCurrent() {
+      if (!state.current) return showToast("Select a query first.");
+      $("refreshBtn").disabled = true;
+      try {
+        state.cache = await api(`/api/query/${encodeURIComponent(state.current)}/refresh`, { method: "POST" });
+        state.page = 1;
+        render();
+        showToast("Refresh complete.");
+      } catch (err) {
+        showToast(err.message);
+      } finally {
+        $("refreshBtn").disabled = false;
+        await loadQueries();
+      }
+    }
+
+    function isKeyValue(cache) {
+      const success = (cache.rows || []).filter(r => Array.isArray(r.data) && r.data.length);
+      return success.length > 0 && success.every(r => r.data.every(row => row.length >= 2));
+    }
+
+    function buildKeyValue(cache) {
+      const keys = [];
+      const values = {};
+      const errors = {};
+      for (const row of cache.rows || []) {
+        values[row.instance] = {};
+        if (row.error) errors[row.instance] = row.error;
+        for (const item of row.data || []) {
+          if (!keys.includes(item[0])) keys.push(item[0]);
+          const val = item[1];
+          if (val != null && val !== "") {
+            values[row.instance][item[0]] = val;
+          } else if (!(item[0] in values[row.instance])) {
+            values[row.instance][item[0]] = "";
+          }
+        }
+      }
+      const instances = (cache.rows || []).map(r => r.instance);
+      const headers = ["item", ...instances];
+      const body = keys.map(key => [key, ...instances.map(instance => values[instance]?.[key] ?? errors[instance] ?? "")]);
+      if (!body.length && Object.keys(errors).length) {
+        body.push(["error", ...instances.map(instance => errors[instance] || "")]);
+      }
+      const instanceErrors = instances.map(instance => Boolean(errors[instance]));
+      return { headers, body, mode: "keyValue", rowHasError: body.map(() => (cache.rows || []).some(row => row.error)), lockedColumns: 1 };
+    }
+
+    function buildMeta(cache) {
+      const labels = cache.column_labels || [];
+      const headers = ["instance", ...labels];
+      const body = [];
+      const rowHasError = [];
+      for (const row of cache.rows || []) {
+        let data = Array.isArray(row.data) ? [...row.data] : [];
+        if (row.error) {
+          data = [row.error, ...Array(Math.max(0, labels.length - 1)).fill("")];
+        }
+        if (data.length < labels.length) {
+          data = data.concat(Array(labels.length - data.length).fill(""));
+        } else if (data.length > labels.length) {
+          data = data.slice(0, labels.length);
+        }
+        body.push([row.instance, ...data]);
+        rowHasError.push(Boolean(row.error));
+      }
+      return { headers, body, mode: "meta", rowHasError, lockedColumns: 1 };
+    }
+
+    function buildFlat(cache) {
+      const base = (cache.rows || []).find(r => r.columns?.length)?.columns || [];
+      const headers = ["instance", ...base, "error"];
+      const body = [];
+      const rowHasError = [];
+      for (const row of cache.rows || []) {
+        if (row.error) {
+          body.push([row.instance, ...base.map(() => ""), row.error]);
+          rowHasError.push(true);
+        } else {
+          for (const item of row.data || []) {
+            body.push([row.instance, ...item, ""]);
+            rowHasError.push(false);
+          }
+        }
+      }
+      return { headers, body, mode: "flat", rowHasError, lockedColumns: 1 };
+    }
+
+    function rowMatches(row) {
+      const keyword = state.search.trim().toLowerCase();
+      if (!keyword) return true;
+      return row.join(" ").toLowerCase().includes(keyword);
+    }
+
+    function render() {
+      const cache = state.cache;
+      if (!cache) return;
+      $("queryMeta").textContent = `Last query: ${cache.queried_at || "never"} | ${statusText[cache.status] || cache.status}`;
+
+      const table = cache.column_labels ? buildMeta(cache) : (isKeyValue(cache) ? buildKeyValue(cache) : buildFlat(cache));
+      syncHiddenColumns(table);
+      renderColumnPanel(table);
+      let rowItems = table.body.map((row, index) => {
+        const error = Boolean(table.rowHasError[index]);
+        return { row, index, error };
+      }).filter(item => rowMatches(item.row));
+
+      const count = rowItems.length;
+      const totalPages = Math.max(1, Math.ceil(count / pageSize));
+      state.page = Math.min(Math.max(1, state.page), totalPages);
+
+      let headers = table.headers;
+      const start = (state.page - 1) * pageSize;
+      rowItems = rowItems.slice(start, start + pageSize);
+
+      const renderRows = rowItems.map(item => {
+        const cls = item.error ? "error-row" : "";
+        return `<tr class="${cls}">${item.row.map((cell, index) => renderCell("td", cell, index, table)).join("")}</tr>`;
+      }).join("");
+
+      $("resultArea").innerHTML = `
+        <div class="table-wrap">
+          <table class="excel-table" style="--frozen-1-width:${state.columnWidths[0] || defaultColumnWidth(0, table)}px">
+            <thead><tr>${headers.map((h, index) => renderCell("th", h, index, table)).join("")}</tr></thead>
+            <tbody>${renderRows}</tbody>
+          </table>
+        </div>
+      `;
+      initColumnResize();
+      $("pager").hidden = false;
+      $("pageInfo").textContent = `Page ${state.page}/${totalPages}`;
+      $("prevPage").disabled = state.page <= 1;
+      $("nextPage").disabled = state.page >= totalPages;
+      $("jumpPage").max = totalPages;
+      $("jumpPage").value = state.page;
+    }
+
+    function renderCell(tag, value, index, table) {
+      const text = String(value ?? "");
+      const classes = [];
+      if (index < (table.lockedColumns || 1)) classes.push(`frozen-col frozen-${index + 1}`);
+      if (index === 0) classes.push("row-label");
+      if (state.hiddenColumns.has(index)) classes.push("hidden-col");
+      if (isNumericText(text)) classes.push("numeric");
+      const width = state.columnWidths[index] || defaultColumnWidth(index, table);
+      const resize = tag === "th" ? '<span class="col-resizer" data-col="' + index + '"></span>' : "";
+      return `<${tag} class="${classes.join(" ")}" data-col="${index}" title="${escapeAttr(text)}" style="width:${width}px;min-width:${width}px;max-width:${width}px">${escapeHtml(text)}${resize}</${tag}>`;
+    }
+
+    function defaultColumnWidth(index, table) {
+      if (table.mode === "meta") {
+        if (index === 0) return 150;
+        return 180;
+      }
+      return index === 0 ? 220 : 180;
+    }
+
+    function isNumericText(value) {
+      const text = String(value ?? "").trim();
+      return text !== "" && /^-?\d+(\.\d+)?$/.test(text);
+    }
+
+    function syncHiddenColumns(table) {
+      const headers = table.headers || [];
+      const locked = table.lockedColumns || 1;
+      const max = headers.length - 1;
+      for (const index of Array.from(state.hiddenColumns)) {
+        if (index > max || index < locked) state.hiddenColumns.delete(index);
+      }
+    }
+
+    function renderColumnPanel(table) {
+      const panel = $("columnPanel");
+      const locked = table.lockedColumns || 1;
+      const headers = table.headers || [];
+      panel.innerHTML = headers.map((header, index) => index < locked ? "" : `
+        <label>
+          <input type="checkbox" data-col="${index}" ${state.hiddenColumns.has(index) ? "" : "checked"}>
+          <span>${escapeHtml(header)}</span>
+        </label>
+      `).join("");
+      panel.querySelectorAll("input[type='checkbox']").forEach(input => {
+        input.addEventListener("change", () => {
+          const col = Number(input.dataset.col);
+          if (input.checked) state.hiddenColumns.delete(col);
+          else state.hiddenColumns.add(col);
+          render();
+        });
+      });
+    }
+
+    function initColumnResize() {
+      document.querySelectorAll(".col-resizer").forEach(handle => {
+        handle.addEventListener("mousedown", event => {
+          event.preventDefault();
+          const col = Number(handle.dataset.col);
+          const startX = event.clientX;
+          const th = handle.closest("th");
+          const startWidth = th ? th.getBoundingClientRect().width : (state.columnWidths[col] || 180);
+          const overlay = document.createElement("div");
+          overlay.className = "resize-overlay";
+          document.body.appendChild(overlay);
+
+          const onMove = moveEvent => {
+            const width = Math.max(60, Math.min(500, Math.round(startWidth + moveEvent.clientX - startX)));
+            state.columnWidths[col] = width;
+            if (col === 0) {
+              const table = document.querySelector(".excel-table");
+              if (table) table.style.setProperty("--frozen-1-width", `${width}px`);
+            }
+            document.querySelectorAll(`[data-col="${col}"]`).forEach(cell => {
+              cell.style.width = `${width}px`;
+              cell.style.minWidth = `${width}px`;
+              cell.style.maxWidth = `${width}px`;
+            });
+          };
+          const onUp = () => {
+            document.removeEventListener("mousemove", onMove);
+            document.removeEventListener("mouseup", onUp);
+            overlay.remove();
+          };
+          document.addEventListener("mousemove", onMove);
+          document.addEventListener("mouseup", onUp);
+        });
+      });
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+    }
+
+    function escapeAttr(value) {
+      return escapeHtml(value).replace(/`/g, "&#96;");
+    }
+
+    $("refreshBtn").addEventListener("click", refreshCurrent);
+    $("exportBtn").addEventListener("click", () => {
+      if (!state.current) return showToast("Select a query first.");
+      location.href = `/api/query/${encodeURIComponent(state.current)}/export`;
+    });
+    $("columnBtn").addEventListener("click", event => {
+      event.stopPropagation();
+      const panel = $("columnPanel");
+      panel.hidden = !panel.hidden;
+      $("columnBtn").setAttribute("aria-expanded", String(!panel.hidden));
+    });
+    document.addEventListener("click", event => {
+      const menu = document.querySelector(".column-menu");
+      if (menu && !menu.contains(event.target)) {
+        $("columnPanel").hidden = true;
+        $("columnBtn").setAttribute("aria-expanded", "false");
+      }
+    });
+    $("refreshAllBtn").addEventListener("click", async () => {
+      $("refreshAllBtn").disabled = true;
+      try {
+        await api("/api/refresh-all", { method: "POST" });
+        showToast("All queries refreshed.");
+        if (state.current) await selectQuery(state.current);
+      } catch (err) {
+        showToast(err.message);
+      } finally {
+        $("refreshAllBtn").disabled = false;
+        await loadQueries();
+      }
+    });
+    $("searchInput").addEventListener("input", e => { state.search = e.target.value; state.page = 1; render(); });
+    $("prevPage").addEventListener("click", () => { state.page -= 1; render(); });
+    $("nextPage").addEventListener("click", () => { state.page += 1; render(); });
+    $("jumpPage").addEventListener("change", e => { state.page = Number(e.target.value) || 1; render(); });
+
+    loadQueries().catch(err => showToast(err.message));
+  </script>
+</body>
+</html>
