@@ -45,14 +45,14 @@ def build_display_table(cache: Dict[str, Any]) -> Dict[str, List[List[Any]]]:
 
 def build_meta_table(cache: Dict[str, Any]) -> Dict[str, List[List[Any]]]:
     labels = cache.get("column_labels") or []
-    headers = ["instance"] + labels
+    headers = ["instance", "env"] + labels
     table_rows = []
     for item in cache.get("rows", []):
         data = list(item.get("data") or [])
         if item.get("error"):
             data = [item.get("error")] + [""] * max(0, len(labels) - 1)
         data = normalize_length(data, len(labels))
-        table_rows.append([item.get("instance"), *data])
+        table_rows.append([item.get("instance"), item.get("env", ""), *data])
     return {"headers": headers, "rows": table_rows}
 
 
@@ -102,14 +102,14 @@ def build_flat_table(rows: List[Dict[str, Any]]) -> Dict[str, List[List[Any]]]:
         if item.get("columns"):
             base_columns = item["columns"]
             break
-    headers = ["instance"] + base_columns + ["error"]
+    headers = ["instance", "env"] + base_columns + ["error"]
     table_rows = []
     for item in rows:
         if item.get("error"):
-            table_rows.append([item.get("instance")] + [""] * len(base_columns) + [item.get("error")])
+            table_rows.append([item.get("instance"), item.get("env", "")] + [""] * len(base_columns) + [item.get("error")])
             continue
         for data_row in item.get("data") or []:
-            table_rows.append([item.get("instance")] + list(data_row) + [""])
+            table_rows.append([item.get("instance"), item.get("env", "")] + list(data_row) + [""])
     return {"headers": headers, "rows": table_rows}
 
 
@@ -127,5 +127,5 @@ def filter_rows(rows: List[List[Any]], search: str) -> List[List[Any]]:
 
 
 if __name__ == "__main__":
-    demo = {"query_name": "demo", "column_labels": ["version"], "rows": [{"instance": "DB-01", "data": ["8"], "error": None}]}
+    demo = {"query_name": "demo", "column_labels": ["version"], "rows": [{"instance": "DB-01", "env": "测试", "data": ["8"], "error": None}]}
     print(len(export_query_to_excel(demo).getvalue()))

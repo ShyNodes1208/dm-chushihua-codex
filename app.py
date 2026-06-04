@@ -134,6 +134,7 @@ def merged_instance(defaults: Dict[str, Any], instance: Dict[str, Any]) -> Dict[
     merged = dict(defaults)
     merged.update(instance)
     merged.setdefault("label", merged.get("host", "unnamed"))
+    merged.setdefault("env", "测试")
     return merged
 
 
@@ -161,6 +162,7 @@ def refresh_query(
             elapsed = int((datetime.now() - started).total_seconds() * 1000)
             result = {
                 "instance": instance["label"],
+                "env": instance.get("env", ""),
                 "host": instance["host"],
                 "query_time_ms": elapsed,
                 "data": data,
@@ -174,6 +176,7 @@ def refresh_query(
             elapsed = int((datetime.now() - started).total_seconds() * 1000)
             return {
                 "instance": instance.get("label", instance.get("host", "unnamed")),
+                "env": instance.get("env", ""),
                 "host": instance.get("host", ""),
                 "query_time_ms": elapsed,
                 "data": None,

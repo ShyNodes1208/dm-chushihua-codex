@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 
-PREDEFINED_KEYS = {"host", "port", "label", "user"}
+PREDEFINED_KEYS = {"host", "port", "label", "user", "env"}
 
 
 class SqlLoader:

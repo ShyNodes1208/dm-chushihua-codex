@@ -158,7 +158,7 @@
 
     function buildMeta(cache) {
       const labels = cache.column_labels || [];
-      const headers = ["instance", ...labels];
+      const headers = ["instance", "env", ...labels];
       const body = [];
       const rowHasError = [];
       for (const row of cache.rows || []) {
@@ -171,29 +171,29 @@
         } else if (data.length > labels.length) {
           data = data.slice(0, labels.length);
         }
-        body.push([row.instance, ...data]);
+        body.push([row.instance, row.env || "", ...data]);
         rowHasError.push(Boolean(row.error));
       }
-      return { headers, body, mode: "meta", rowHasError, lockedColumns: 1 };
+      return { headers, body, mode: "meta", rowHasError, lockedColumns: 2 };
     }
 
     function buildFlat(cache) {
       const base = (cache.rows || []).find(r => r.columns?.length)?.columns || [];
-      const headers = ["instance", ...base, "error"];
+      const headers = ["instance", "env", ...base, "error"];
       const body = [];
       const rowHasError = [];
       for (const row of cache.rows || []) {
         if (row.error) {
-          body.push([row.instance, ...base.map(() => ""), row.error]);
+          body.push([row.instance, row.env || "", ...base.map(() => ""), row.error]);
           rowHasError.push(true);
         } else {
           for (const item of row.data || []) {
-            body.push([row.instance, ...item, ""]);
+            body.push([row.instance, row.env || "", ...item, ""]);
             rowHasError.push(false);
           }
         }
       }
-      return { headers, body, mode: "flat", rowHasError, lockedColumns: 1 };
+      return { headers, body, mode: "flat", rowHasError, lockedColumns: 2 };
     }
 
     function rowMatches(row) {
@@ -248,7 +248,7 @@
     function renderCell(tag, value, index, table) {
       const text = String(value ?? "");
       const classes = [];
-      if (index < (table.lockedColumns || 1)) classes.push(`frozen-col frozen-${index + 1}`);
+      if (index < (table.lockedColumns || 2)) classes.push(`frozen-col frozen-${index + 1}`);
       if (index === 0) classes.push("row-label");
       if (state.hiddenColumns.has(index)) classes.push("hidden-col");
       if (isNumericText(text)) classes.push("numeric");
@@ -260,9 +260,12 @@
     function defaultColumnWidth(index, table) {
       if (table.mode === "meta") {
         if (index === 0) return 150;
+        if (index === 1) return 100;
         return 180;
       }
-      return index === 0 ? 220 : 180;
+      if (index === 0) return 220;
+      if ((table.lockedColumns || 2) >= 2 && index === 1) return 100;
+      return 180;
     }
 
     function isNumericText(value) {
@@ -272,7 +275,7 @@
 
     function syncHiddenColumns(table) {
       const headers = table.headers || [];
-      const locked = table.lockedColumns || 1;
+      const locked = table.lockedColumns || 2;
       const max = headers.length - 1;
       for (const index of Array.from(state.hiddenColumns)) {
         if (index > max || index < locked) state.hiddenColumns.delete(index);
@@ -281,7 +284,7 @@
 
     function renderColumnPanel(table) {
       const panel = $("columnPanel");
-      const locked = table.lockedColumns || 1;
+      const locked = table.lockedColumns || 2;
       const headers = table.headers || [];
       panel.innerHTML = headers.map((header, index) => index < locked ? "" : `
         <label>

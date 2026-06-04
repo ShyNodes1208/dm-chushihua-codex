@@ -2,13 +2,15 @@
   "instances": [
     {
       "label": "DB-01",
-      "host": "192.168.1.101"
+      "host": "192.168.1.101",
+      "env": "测试"
     }
   ],
   "defaults": {
     "port": 5236,
     "user": "SYSDBA",
-    "password": "YOUR_PASSWORD"
+    "password": "YOUR_PASSWORD",
+    "env": "测试"
   },
   "sql_dir": "./sql_templates",
   "cache_dir": "./cache",
