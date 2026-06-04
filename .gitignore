@@ -1,8 +1,28 @@
-@"
-.venv/
+# Python
 __pycache__/
 *.pyc
-cache/
+*.pyo
+.venv/
+
+# 运行时生成
+cache/*.json
 server.out.log
 server.err.log
-"@ | Out-File -Encoding utf8 .gitignore
+
+# 配置文件（含密码，不要提交）
+config.json
+
+# 离线包/发布文件（体积大，在 release 中单独分发）
+release/
+offline_package/
+offline_packages/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 系统文件
+Thumbs.db
+Desktop.ini
