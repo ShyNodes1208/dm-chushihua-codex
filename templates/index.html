@@ -7,22 +7,22 @@
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <aside class="sidebar">
-    <div class="brand">
-      <strong>DM Query</strong>
-      <button id="refreshAllBtn" title="Refresh all">R</button>
-    </div>
-    <nav id="queryList" class="query-list"></nav>
-  </aside>
-
   <main class="main">
     <header class="toolbar">
-      <div>
-        <h1 id="queryTitle">Select a query</h1>
-        <p id="queryMeta">Query cache status is shown on the left.</p>
+      <div class="query-head">
+        <div class="query-picker">
+          <label for="querySelect">Query</label>
+          <select id="querySelect"></select>
+          <span id="queryStatus" class="status-pill missing">
+            <span class="dot missing"></span>
+            <span>missing</span>
+          </span>
+        </div>
+        <p id="queryMeta">Select a query to view cached database information.</p>
       </div>
       <div class="actions">
-        <button id="refreshBtn">Refresh</button>
+        <button id="refreshBtn" class="primary-action">Refresh</button>
+        <button id="refreshAllBtn">Refresh All</button>
         <button id="exportBtn">Export Excel</button>
         <div class="column-menu">
           <button id="columnBtn" type="button" aria-expanded="false">Columns</button>
@@ -34,7 +34,7 @@
 
     <section id="toast" class="toast" hidden></section>
     <section id="resultArea" class="result-area">
-      <div class="empty">Select a SQL query from the left.</div>
+      <div class="empty">Select a SQL query above.</div>
     </section>
     <footer id="pager" class="pager" hidden>
       <button id="prevPage">Prev</button>
@@ -67,16 +67,7 @@
     async function loadQueries() {
       const data = await api("/api/queries");
       state.queries = data.queries || [];
-      $("queryList").innerHTML = state.queries.map(q => `
-        <button class="query-item ${q.name === state.current ? "active" : ""}" data-name="${escapeAttr(q.name)}">
-          <span class="dot ${escapeAttr(q.status)}"></span>
-          <span>${escapeHtml(q.name)}</span>
-          <small>${escapeHtml(statusText[q.status] || q.status)}</small>
-        </button>
-      `).join("");
-      document.querySelectorAll(".query-item").forEach(btn => {
-        btn.addEventListener("click", () => selectQuery(btn.dataset.name));
-      });
+      renderQuerySelect();
       if (!state.current && state.queries.length > 0) {
         await selectQuery(state.queries[0].name);
       }
@@ -85,11 +76,13 @@
     async function selectQuery(name) {
       state.current = name;
       state.page = 1;
-      $("queryTitle").textContent = name;
+      syncQuerySelect();
+      updateQueryStatus(queryStatusFor(name));
       try {
         state.cache = await api(`/api/query/${encodeURIComponent(name)}`);
         if (state.cache && state.cache.status === "missing") {
           $("queryMeta").textContent = "First load, querying now...";
+          updateQueryStatus("missing");
           await refreshCurrent();
           return;
         }
@@ -97,15 +90,45 @@
       } catch (err) {
         if (err.message && err.message.includes("No cache")) {
           $("queryMeta").textContent = "First load, querying now...";
+          updateQueryStatus("missing");
           await refreshCurrent();
           return;
         }
         state.cache = null;
         $("queryMeta").textContent = err.message;
+        updateQueryStatus("missing");
         $("resultArea").innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
         $("pager").hidden = true;
       }
       await loadQueries();
+    }
+
+    function renderQuerySelect() {
+      const select = $("querySelect");
+      select.disabled = state.queries.length === 0;
+      select.innerHTML = state.queries.length
+        ? state.queries.map(q => `<option value="${escapeAttr(q.name)}">${escapeHtml(q.name)}</option>`).join("")
+        : '<option value="">No queries</option>';
+      syncQuerySelect();
+      updateQueryStatus(queryStatusFor(state.current));
+    }
+
+    function syncQuerySelect() {
+      const select = $("querySelect");
+      if (state.current && select.value !== state.current) {
+        select.value = state.current;
+      }
+    }
+
+    function queryStatusFor(name) {
+      const query = state.queries.find(item => item.name === name);
+      return query ? query.status : "missing";
+    }
+
+    function updateQueryStatus(status) {
+      const safeStatus = statusText[status] ? status : "missing";
+      $("queryStatus").className = `status-pill ${safeStatus}`;
+      $("queryStatus").innerHTML = `<span class="dot ${safeStatus}"></span><span>${escapeHtml(statusText[safeStatus])}</span>`;
     }
 
     async function refreshCurrent() {
@@ -227,6 +250,7 @@
       const cache = state.cache;
       if (!cache) return;
       $("queryMeta").textContent = `Last query: ${cache.queried_at || "never"} | ${statusText[cache.status] || cache.status}`;
+      updateQueryStatus(cache.status);
 
       const table = cache.column_labels ? buildMeta(cache) : (isKeyValue(cache) ? buildKeyValue(cache) : buildFlat(cache));
       syncHiddenColumns(table);
@@ -368,6 +392,7 @@
     }
 
     $("refreshBtn").addEventListener("click", refreshCurrent);
+    $("querySelect").addEventListener("change", e => selectQuery(e.target.value));
     $("exportBtn").addEventListener("click", () => {
       if (!state.current) return showToast("Select a query first.");
       location.href = `/api/query/${encodeURIComponent(state.current)}/export`;
