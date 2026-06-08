@@ -33,6 +33,7 @@
     </header>
 
     <section id="toast" class="toast" hidden></section>
+    <div id="cellTooltip" class="cell-tooltip" hidden></div>
     <section id="resultArea" class="result-area">
       <div class="empty">Select a SQL query above.</div>
     </section>
@@ -299,7 +300,7 @@
       if (isNumericText(text)) classes.push("numeric");
       const width = state.columnWidths[index] || defaultColumnWidth(index, table);
       const resize = tag === "th" ? '<span class="col-resizer" data-col="' + index + '"></span>' : "";
-      return `<${tag} class="${classes.join(" ")}" data-col="${index}" title="${escapeAttr(text)}" style="width:${width}px;min-width:${width}px;max-width:${width}px">${escapeHtml(text)}${resize}</${tag}>`;
+      return `<${tag} class="${classes.join(" ")}" data-col="${index}" data-tooltip="${escapeAttr(text)}" style="width:${width}px;min-width:${width}px;max-width:${width}px">${escapeHtml(text)}${resize}</${tag}>`;
     }
 
     function defaultColumnWidth(index, table) {
@@ -391,6 +392,49 @@
       return escapeHtml(value).replace(/`/g, "&#96;");
     }
 
+    function initCellTooltip() {
+      const tooltip = $("cellTooltip");
+      const hide = () => {
+        tooltip.hidden = true;
+        tooltip.textContent = "";
+      };
+      const show = (event, cell) => {
+        const text = cell.dataset.tooltip || "";
+        if (!text) return hide();
+        if (cell.scrollWidth <= cell.clientWidth && cell.scrollHeight <= cell.clientHeight) return hide();
+        tooltip.textContent = text;
+        tooltip.hidden = false;
+        move(event);
+      };
+      const move = event => {
+        if (tooltip.hidden) return;
+        const margin = 12;
+        const offset = 14;
+        const rect = tooltip.getBoundingClientRect();
+        let left = event.clientX + offset;
+        let top = event.clientY + offset;
+        if (left + rect.width + margin > window.innerWidth) {
+          left = Math.max(margin, event.clientX - rect.width - offset);
+        }
+        if (top + rect.height + margin > window.innerHeight) {
+          top = Math.max(margin, event.clientY - rect.height - offset);
+        }
+        tooltip.style.left = `${left}px`;
+        tooltip.style.top = `${top}px`;
+      };
+
+      document.addEventListener("mouseover", event => {
+        const cell = event.target.closest(".excel-table th, .excel-table td");
+        if (!cell) return;
+        show(event, cell);
+      });
+      document.addEventListener("mousemove", move);
+      document.addEventListener("mouseout", event => {
+        if (event.target.closest(".excel-table th, .excel-table td")) hide();
+      });
+      window.addEventListener("scroll", hide, true);
+    }
+
     $("refreshBtn").addEventListener("click", refreshCurrent);
     $("querySelect").addEventListener("change", e => selectQuery(e.target.value));
     $("exportBtn").addEventListener("click", () => {
@@ -428,6 +472,7 @@
     $("nextPage").addEventListener("click", () => { state.page += 1; render(); });
     $("jumpPage").addEventListener("change", e => { state.page = Number(e.target.value) || 1; render(); });
 
+    initCellTooltip();
     loadQueries().catch(err => showToast(err.message));
   </script>
 </body>

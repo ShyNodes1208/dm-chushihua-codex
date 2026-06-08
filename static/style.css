@@ -420,6 +420,23 @@ tbody tr:hover .frozen-col {
   box-shadow: 0 8px 20px rgba(98, 59, 0, 0.08);
 }
 
+.cell-tooltip {
+  position: fixed;
+  z-index: 10000;
+  max-width: min(520px, calc(100vw - 24px));
+  padding: 8px 10px;
+  border: 1px solid rgba(17, 24, 39, 0.12);
+  border-radius: 6px;
+  background: rgba(17, 24, 39, 0.94);
+  box-shadow: 0 16px 34px rgba(17, 24, 39, 0.22);
+  color: #ffffff;
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  white-space: normal;
+}
+
 @media (max-width: 840px) {
   .toolbar,
   .actions {
