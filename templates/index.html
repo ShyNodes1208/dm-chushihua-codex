@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>DM Query Dashboard</title>
+  <title>达梦数据库信息看板</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -11,50 +11,50 @@
     <header class="toolbar">
       <div class="query-head">
         <div class="query-picker">
-          <label for="querySelect">Query</label>
+          <label for="querySelect">查询</label>
           <select id="querySelect"></select>
           <span id="queryStatus" class="status-pill missing">
             <span class="dot missing"></span>
-            <span>missing</span>
+            <span>未缓存</span>
           </span>
         </div>
-        <p id="queryMeta">Select a query to view cached database information.</p>
+        <p id="queryMeta">选择查询后查看缓存的数据库信息。</p>
       </div>
       <div class="actions">
-        <button id="refreshBtn" class="primary-action">Refresh</button>
-        <button id="refreshAllBtn">Refresh All</button>
-        <button id="exportBtn">Export Excel</button>
+        <button id="refreshBtn" class="primary-action">刷新</button>
+        <button id="refreshAllBtn">全部刷新</button>
+        <button id="exportBtn">导出 Excel</button>
         <div class="column-menu">
-          <button id="columnBtn" type="button" aria-expanded="false">Columns</button>
+          <button id="columnBtn" type="button" aria-expanded="false">列设置</button>
           <div id="columnPanel" class="column-panel" hidden></div>
         </div>
-        <input id="searchInput" type="search" placeholder="Search">
+        <input id="searchInput" type="search" placeholder="搜索">
       </div>
     </header>
 
     <section id="toast" class="toast" hidden></section>
     <div id="cellTooltip" class="cell-tooltip" hidden></div>
     <section id="resultArea" class="result-area">
-      <div class="empty">Select a SQL query above.</div>
+      <div class="empty">请先在上方选择 SQL 查询。</div>
     </section>
     <footer id="pager" class="pager" hidden>
-      <button id="prevPage">Prev</button>
+      <button id="prevPage">上一页</button>
       <span id="pageInfo"></span>
-      <button id="nextPage">Next</button>
-      <label>Go to <input id="jumpPage" type="number" min="1"> </label>
+      <button id="nextPage">下一页</button>
+      <label>跳转到 <input id="jumpPage" type="number" min="1"> </label>
     </footer>
   </main>
 
   <script>
     const pageSize = Number({{ page_size|tojson }}) || 10;
     const state = { queries: [], current: null, cache: null, page: 1, search: "", hiddenColumns: new Set(), columnWidths: {} };
-    const statusText = { valid: "valid", stale: "stale", missing: "missing" };
+    const statusText = { valid: "有效", stale: "已过期", missing: "未缓存" };
     const $ = (id) => document.getElementById(id);
 
     async function api(url, options = {}) {
       const res = await fetch(url, options);
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || "Request failed");
+      if (!res.ok) throw new Error(data.error || "请求失败");
       return data;
     }
 
@@ -82,7 +82,7 @@
       try {
         state.cache = await api(`/api/query/${encodeURIComponent(name)}`);
         if (state.cache && state.cache.status === "missing") {
-          $("queryMeta").textContent = "First load, querying now...";
+          $("queryMeta").textContent = "首次加载，正在查询...";
           updateQueryStatus("missing");
           await refreshCurrent();
           return;
@@ -90,7 +90,7 @@
         render();
       } catch (err) {
         if (err.message && err.message.includes("No cache")) {
-          $("queryMeta").textContent = "First load, querying now...";
+          $("queryMeta").textContent = "首次加载，正在查询...";
           updateQueryStatus("missing");
           await refreshCurrent();
           return;
@@ -109,7 +109,7 @@
       select.disabled = state.queries.length === 0;
       select.innerHTML = state.queries.length
         ? state.queries.map(q => `<option value="${escapeAttr(q.name)}">${escapeHtml(q.name)}</option>`).join("")
-        : '<option value="">No queries</option>';
+        : '<option value="">暂无查询</option>';
       syncQuerySelect();
       updateQueryStatus(queryStatusFor(state.current));
     }
@@ -133,13 +133,13 @@
     }
 
     async function refreshCurrent() {
-      if (!state.current) return showToast("Select a query first.");
+      if (!state.current) return showToast("请先选择查询。");
       $("refreshBtn").disabled = true;
       try {
         state.cache = await api(`/api/query/${encodeURIComponent(state.current)}/refresh`, { method: "POST" });
         state.page = 1;
         render();
-        showToast("Refresh complete.");
+        showToast("刷新完成。");
       } catch (err) {
         showToast(err.message);
       } finally {
@@ -250,7 +250,7 @@
     function render() {
       const cache = state.cache;
       if (!cache) return;
-      $("queryMeta").textContent = `Last query: ${cache.queried_at || "never"} | ${statusText[cache.status] || cache.status}`;
+      $("queryMeta").textContent = `上次查询：${cache.queried_at || "从未查询"} | ${statusText[cache.status] || cache.status}`;
       updateQueryStatus(cache.status);
 
       const table = cache.column_labels ? buildMeta(cache) : (isKeyValue(cache) ? buildKeyValue(cache) : buildFlat(cache));
@@ -284,7 +284,7 @@
       `;
       initColumnResize();
       $("pager").hidden = false;
-      $("pageInfo").textContent = `Page ${state.page}/${totalPages}`;
+      $("pageInfo").textContent = `第 ${state.page}/${totalPages} 页`;
       $("prevPage").disabled = state.page <= 1;
       $("nextPage").disabled = state.page >= totalPages;
       $("jumpPage").max = totalPages;
@@ -438,7 +438,7 @@
     $("refreshBtn").addEventListener("click", refreshCurrent);
     $("querySelect").addEventListener("change", e => selectQuery(e.target.value));
     $("exportBtn").addEventListener("click", () => {
-      if (!state.current) return showToast("Select a query first.");
+      if (!state.current) return showToast("请先选择查询。");
       location.href = `/api/query/${encodeURIComponent(state.current)}/export`;
     });
     $("columnBtn").addEventListener("click", event => {
@@ -458,7 +458,7 @@
       $("refreshAllBtn").disabled = true;
       try {
         await api("/api/refresh-all", { method: "POST" });
-        showToast("All queries refreshed.");
+        showToast("全部查询刷新完成。");
         if (state.current) await selectQuery(state.current);
       } catch (err) {
         showToast(err.message);
