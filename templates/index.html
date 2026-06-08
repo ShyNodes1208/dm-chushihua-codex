@@ -125,34 +125,36 @@
     }
 
     function isKeyValue(cache) {
-      const success = (cache.rows || []).filter(r => Array.isArray(r.data) && r.data.length);
-      return success.length > 0 && success.every(r => r.data.every(row => row.length >= 2));
+      return cache.display_mode === "key_value";
     }
 
     function buildKeyValue(cache) {
       const keys = [];
       const values = {};
       const errors = {};
-      for (const row of cache.rows || []) {
-        values[row.instance] = {};
-        if (row.error) errors[row.instance] = row.error;
+      const instanceKeys = [];
+      const instanceLabels = [];
+      for (const [index, row] of (cache.rows || []).entries()) {
+        const instanceKey = `${index}:${row.instance || ""}`;
+        instanceKeys.push(instanceKey);
+        instanceLabels.push(row.instance);
+        values[instanceKey] = {};
+        if (row.error) errors[instanceKey] = row.error;
         for (const item of row.data || []) {
           if (!keys.includes(item[0])) keys.push(item[0]);
           const val = item[1];
           if (val != null && val !== "") {
-            values[row.instance][item[0]] = val;
-          } else if (!(item[0] in values[row.instance])) {
-            values[row.instance][item[0]] = "";
+            values[instanceKey][item[0]] = val;
+          } else if (!(item[0] in values[instanceKey])) {
+            values[instanceKey][item[0]] = "";
           }
         }
       }
-      const instances = (cache.rows || []).map(r => r.instance);
-      const headers = ["item", ...instances];
-      const body = keys.map(key => [key, ...instances.map(instance => values[instance]?.[key] ?? errors[instance] ?? "")]);
+      const headers = ["item", ...instanceLabels];
+      const body = keys.map(key => [key, ...instanceKeys.map(instanceKey => values[instanceKey]?.[key] ?? errors[instanceKey] ?? "")]);
       if (!body.length && Object.keys(errors).length) {
-        body.push(["error", ...instances.map(instance => errors[instance] || "")]);
+        body.push(["error", ...instanceKeys.map(instanceKey => errors[instanceKey] || "")]);
       }
-      const instanceErrors = instances.map(instance => Boolean(errors[instance]));
       return { headers, body, mode: "keyValue", rowHasError: body.map(() => (cache.rows || []).some(row => row.error)), lockedColumns: 1 };
     }
 
@@ -178,7 +180,14 @@
     }
 
     function buildFlat(cache) {
-      const base = (cache.rows || []).find(r => r.columns?.length)?.columns || [];
+      let base = [];
+      for (const row of cache.rows || []) {
+        if ((row.columns || []).length > base.length) base = row.columns;
+      }
+      if (!base.length) {
+        const maxValues = Math.max(0, ...(cache.rows || []).flatMap(row => (row.data || []).map(item => item.length)));
+        base = Array.from({ length: maxValues }, (_, index) => `col_${index + 1}`);
+      }
       const headers = ["instance", "env", ...base, "error"];
       const body = [];
       const rowHasError = [];
@@ -187,13 +196,25 @@
           body.push([row.instance, row.env || "", ...base.map(() => ""), row.error]);
           rowHasError.push(true);
         } else {
-          for (const item of row.data || []) {
-            body.push([row.instance, row.env || "", ...item, ""]);
+          const dataRows = row.data || [];
+          if (!dataRows.length) {
+            body.push([row.instance, row.env || "", ...base.map(() => ""), ""]);
+            rowHasError.push(false);
+            continue;
+          }
+          for (const item of dataRows) {
+            body.push([row.instance, row.env || "", ...normalizeLength(item, base.length), ""]);
             rowHasError.push(false);
           }
         }
       }
       return { headers, body, mode: "flat", rowHasError, lockedColumns: 2 };
+    }
+
+    function normalizeLength(values, length) {
+      const normalized = Array.isArray(values) ? values.slice(0, length) : [];
+      while (normalized.length < length) normalized.push("");
+      return normalized;
     }
 
     function rowMatches(row) {

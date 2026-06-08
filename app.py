@@ -59,7 +59,7 @@ def create_app() -> Flask:
                 return jsonify({"error": "No cache yet. Refresh data first.", "status": "missing"}), 404
             payload = dict(cache)
             payload["status"] = cache_manager.status(name, item["md5"])
-            payload["page_size"] = int(request.args.get("per_page") or config.get("page_size", 10))
+            payload["page_size"] = parse_positive_int(request.args.get("per_page"), config.get("page_size", 10))
             payload["search"] = request.args.get("search", "")
             return jsonify(payload)
         except FileNotFoundError:
@@ -97,7 +97,7 @@ def create_app() -> Flask:
             cache = cache_manager.read(name)
             if not cache:
                 return jsonify({"error": "No cache yet. Refresh data first."}), 404
-            stream = export_query_to_excel(cache, search="")
+            stream = export_query_to_excel(cache, search=request.args.get("search", ""))
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"{item['name']}_{timestamp}.xlsx"
             return send_file(
@@ -128,6 +128,14 @@ def load_config() -> Dict[str, Any]:
     if os.environ.get("DM_PASSWORD"):
         config["defaults"]["password"] = os.environ["DM_PASSWORD"]
     return config
+
+
+def parse_positive_int(value: Any, default: Any) -> int:
+    try:
+        parsed = int(value if value not in (None, "") else default)
+    except (TypeError, ValueError):
+        parsed = int(default or 10)
+    return max(1, parsed)
 
 
 def merged_instance(defaults: Dict[str, Any], instance: Dict[str, Any]) -> Dict[str, Any]:

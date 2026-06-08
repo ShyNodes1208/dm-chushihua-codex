@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from io import BytesIO
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, List
 
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
@@ -37,8 +37,7 @@ def export_query_to_excel(cache: Dict[str, Any], search: str = "") -> BytesIO:
 def build_display_table(cache: Dict[str, Any]) -> Dict[str, List[List[Any]]]:
     if cache.get("column_labels"):
         return build_meta_table(cache)
-    success_rows = [row for row in cache.get("rows", []) if row.get("data")]
-    if is_key_value_result(success_rows):
+    if cache.get("display_mode") == "key_value":
         return build_key_value_table(cache.get("rows", []))
     return build_flat_table(cache.get("rows", []))
 
@@ -56,60 +55,59 @@ def build_meta_table(cache: Dict[str, Any]) -> Dict[str, List[List[Any]]]:
     return {"headers": headers, "rows": table_rows}
 
 
-def is_key_value_result(rows: Iterable[Dict[str, Any]]) -> bool:
-    checked = False
-    for row in rows:
-        data = row.get("data") or []
-        if not data:
-            continue
-        checked = True
-        if any(not isinstance(item, (list, tuple)) or len(item) < 2 for item in data):
-            return False
-    return checked
-
-
 def build_key_value_table(rows: List[Dict[str, Any]]) -> Dict[str, List[List[Any]]]:
     keys = []
     values_by_instance = {}
     errors = {}
-    for item in rows:
-        instance = item.get("instance")
-        values_by_instance[instance] = {}
+    instance_keys = []
+    instance_labels = []
+    for index, item in enumerate(rows):
+        instance_key = f"{index}:{item.get('instance', '')}"
+        instance_keys.append(instance_key)
+        instance_labels.append(item.get("instance"))
+        values_by_instance[instance_key] = {}
         if item.get("error"):
-            errors[instance] = item["error"]
+            errors[instance_key] = item["error"]
         for data_row in item.get("data") or []:
             key = data_row[0]
             if key not in keys:
                 keys.append(key)
             val = data_row[1] if len(data_row) > 1 else None
             if val is not None and val != "":
-                values_by_instance[instance][key] = val
-            elif key not in values_by_instance[instance]:
-                values_by_instance[instance][key] = ""
+                values_by_instance[instance_key][key] = val
+            elif key not in values_by_instance[instance_key]:
+                values_by_instance[instance_key][key] = ""
 
-    headers = ["item"] + [item.get("instance") for item in rows]
+    headers = ["item"] + instance_labels
     table_rows = []
     for key in keys:
-        table_rows.append([key] + [values_by_instance.get(item.get("instance"), {}).get(key, errors.get(item.get("instance"), "")) for item in rows])
+        table_rows.append([key] + [values_by_instance.get(instance_key, {}).get(key, errors.get(instance_key, "")) for instance_key in instance_keys])
     if not keys and errors:
-        table_rows.append(["error"] + [errors.get(item.get("instance"), "") for item in rows])
+        table_rows.append(["error"] + [errors.get(instance_key, "") for instance_key in instance_keys])
     return {"headers": headers, "rows": table_rows}
 
 
 def build_flat_table(rows: List[Dict[str, Any]]) -> Dict[str, List[List[Any]]]:
-    base_columns = []
+    base_columns: List[Any] = []
     for item in rows:
-        if item.get("columns"):
+        if len(item.get("columns") or []) > len(base_columns):
             base_columns = item["columns"]
-            break
+    if not base_columns:
+        max_values = max((len(data_row) for item in rows for data_row in item.get("data") or []), default=0)
+        if max_values:
+            base_columns = [f"col_{index}" for index in range(1, max_values + 1)]
     headers = ["instance", "env"] + base_columns + ["error"]
     table_rows = []
     for item in rows:
         if item.get("error"):
             table_rows.append([item.get("instance"), item.get("env", "")] + [""] * len(base_columns) + [item.get("error")])
             continue
-        for data_row in item.get("data") or []:
-            table_rows.append([item.get("instance"), item.get("env", "")] + list(data_row) + [""])
+        data_rows = item.get("data") or []
+        if not data_rows:
+            table_rows.append([item.get("instance"), item.get("env", "")] + [""] * len(base_columns) + [""])
+            continue
+        for data_row in data_rows:
+            table_rows.append([item.get("instance"), item.get("env", "")] + normalize_length(list(data_row), len(base_columns)) + [""])
     return {"headers": headers, "rows": table_rows}
 
 
