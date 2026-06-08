@@ -118,7 +118,7 @@ def load_config() -> Dict[str, Any]:
     import json
 
     config_path = BASE_DIR / "config.json"
-    with config_path.open("r", encoding="utf-8") as fh:
+    with config_path.open("r", encoding="utf-8-sig") as fh:
         config = json.load(fh)
     config["sql_dir"] = str((BASE_DIR / config.get("sql_dir", "./sql_templates")).resolve())
     config["cache_dir"] = str((BASE_DIR / config.get("cache_dir", "./cache")).resolve())
