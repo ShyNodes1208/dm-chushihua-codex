@@ -15,6 +15,11 @@
   "sql_dir": "./sql_templates",
   "cache_dir": "./cache",
   "page_size": 10,
+  "cache_max_age_minutes": 1440,
+  "auth": {
+    "enabled": false,
+    "password": "set-a-password-here"
+  },
   "server": {
     "host": "127.0.0.1",
     "port": 5000

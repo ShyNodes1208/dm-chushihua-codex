@@ -16,6 +16,11 @@
   box-sizing: border-box;
 }
 
+/* 确保带 hidden 属性的元素始终隐藏，避免被 .overlay 等 display 规则覆盖。 */
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   min-height: 100vh;
@@ -444,6 +449,384 @@ tbody tr:hover .frozen-col {
   overflow-wrap: anywhere;
   pointer-events: none;
   white-space: normal;
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-muted);
+  user-select: none;
+  white-space: nowrap;
+}
+
+.toggle input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+}
+
+.actions select {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #ffffff;
+  color: #182230;
+  min-height: 34px;
+  padding: 6px 8px;
+}
+
+.warning-banner {
+  margin-top: 6px;
+  color: #9a6a00;
+  font-weight: 600;
+}
+
+.summary-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.9);
+  color: #344256;
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: var(--shadow);
+}
+
+.sort-arrow {
+  color: var(--accent);
+  font-size: 11px;
+}
+
+th.sortable {
+  cursor: pointer;
+}
+
+.cell-changed {
+  background: #fff6da !important;
+  box-shadow: inset 0 0 0 2px rgba(241, 180, 41, 0.55);
+}
+
+.empty-cell {
+  text-align: center;
+  color: #8793a5;
+  padding: 28px;
+}
+
+/* ---------- 模态框 ---------- */
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  background: rgba(17, 24, 39, 0.45);
+  padding: 16px;
+}
+
+.dialog {
+  background: #ffffff;
+  border-radius: 12px;
+  box-shadow: 0 24px 60px rgba(18, 31, 51, 0.28);
+  padding: 18px;
+  width: 100%;
+  max-width: 420px;
+}
+
+.wide-dialog {
+  max-width: 960px;
+  max-height: 88vh;
+  overflow: auto;
+}
+
+.dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.dialog-head h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.close-btn {
+  border: none;
+  background: transparent;
+  font-size: 22px;
+  line-height: 1;
+  color: #6b788a;
+  min-height: auto;
+  padding: 2px 8px;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.login-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.login-dialog h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.login-dialog input {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  min-height: 38px;
+  padding: 8px 10px;
+}
+
+.form-error {
+  color: #b3261e;
+  margin: 0;
+}
+
+.hint {
+  color: var(--text-muted);
+  font-size: 12px;
+  margin: 0 0 10px;
+}
+
+.tabs {
+  display: flex;
+  gap: 6px;
+}
+
+.tab {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #f3f6fa;
+}
+
+.tab.active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #ffffff;
+  font-weight: 700;
+}
+
+.table-scroll {
+  overflow: auto;
+  max-height: 56vh;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+}
+
+.edit-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.edit-table th,
+.edit-table td {
+  border: 1px solid var(--border-soft);
+  padding: 6px 8px;
+  text-align: left;
+  white-space: nowrap;
+  max-width: none;
+  height: auto;
+}
+
+.edit-table th {
+  position: sticky;
+  top: 0;
+  background: #f3f6fa;
+}
+
+.edit-table input {
+  width: 100%;
+  min-width: 90px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 5px 6px;
+}
+
+.del-row {
+  color: #b3261e;
+  border-color: #f0c5c1;
+}
+
+.conn-results {
+  min-height: 120px;
+}
+
+.conn-loading {
+  padding: 28px;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.conn-summary {
+  font-weight: 700;
+  color: #344256;
+}
+
+.conn-err {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sql-editor {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 14px;
+}
+
+.sql-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sql-list select {
+  flex: 1;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px;
+  min-height: 220px;
+}
+
+.sql-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sql-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #344256;
+}
+
+.sql-form input,
+.sql-form textarea {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-family: "Consolas", "Courier New", monospace;
+}
+
+/* ---------- 深色模式 ---------- */
+body.dark {
+  --accent: #4f8cff;
+  --accent-strong: #3b78f0;
+  --border: #38404d;
+  --border-soft: #2c333d;
+  --panel: #1c2128;
+  --text-muted: #9aa7b8;
+  --shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  color: #e6edf3;
+  background: #11151b;
+}
+
+body.dark {
+  background: linear-gradient(180deg, #161b22 0, #11151b 220px), #11151b;
+}
+
+body.dark button,
+body.dark .actions select,
+body.dark .query-picker select,
+body.dark .actions input,
+body.dark .pager input,
+body.dark .edit-table input,
+body.dark .sql-form input,
+body.dark .sql-form textarea,
+body.dark .sql-list select,
+body.dark .login-dialog input {
+  background: #1c2128;
+  color: #e6edf3;
+  border-color: var(--border);
+}
+
+body.dark .primary-action,
+body.dark .tab.active {
+  background: var(--accent);
+  color: #ffffff;
+}
+
+body.dark .toolbar,
+body.dark .summary-bar {
+  background: rgba(28, 33, 40, 0.92);
+}
+
+body.dark .dialog,
+body.dark .column-panel {
+  background: #1c2128;
+  color: #e6edf3;
+}
+
+body.dark th {
+  background: #232a33;
+  color: #e6edf3;
+  border-bottom-color: #3a434f;
+}
+
+body.dark .edit-table th {
+  background: #232a33;
+}
+
+body.dark .frozen-col {
+  background: #20262e;
+  color: #e6edf3;
+}
+
+body.dark thead .frozen-col {
+  background: #232a33;
+}
+
+body.dark tbody tr {
+  background: #1a1f26;
+}
+
+body.dark tbody tr:nth-child(even) {
+  background: #1d232b;
+}
+
+body.dark tbody tr:nth-child(even) .frozen-col,
+body.dark tbody tr:nth-child(even) .row-label {
+  background: #232a33;
+}
+
+body.dark tbody tr:hover {
+  background: #263141;
+}
+
+body.dark tbody tr:hover .frozen-col,
+body.dark tbody tr:hover .row-label {
+  background: #2c3a4d;
+}
+
+body.dark .error-row {
+  background: #3a2326 !important;
+  color: #ff9c9c;
+}
+
+body.dark .error-row .row-label {
+  background: #47282c !important;
+  color: #ffb4b4;
+}
+
+body.dark .cell-changed {
+  background: #463a16 !important;
 }
 
 @media (max-width: 840px) {

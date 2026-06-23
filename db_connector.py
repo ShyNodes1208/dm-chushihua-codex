@@ -1,6 +1,19 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Dict, List
+
+
+def test_connection(instance: Dict[str, Any]) -> Dict[str, Any]:
+    """轻量探测单个实例是否可连通，返回 {ok, elapsed_ms, error}。"""
+    started = datetime.now()
+    try:
+        query_instance(instance, "SELECT 1 AS OK FROM DUAL")
+        elapsed = int((datetime.now() - started).total_seconds() * 1000)
+        return {"ok": True, "elapsed_ms": elapsed, "error": None}
+    except Exception as exc:  # noqa: BLE001 - 连通性探测需要兜住所有异常
+        elapsed = int((datetime.now() - started).total_seconds() * 1000)
+        return {"ok": False, "elapsed_ms": elapsed, "error": str(exc)}
 
 
 def query_instance(instance: Dict[str, Any], sql: str) -> Dict[str, List[Any]]:

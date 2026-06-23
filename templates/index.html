@@ -7,6 +7,15 @@
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+  <div id="loginOverlay" class="overlay" hidden>
+    <form id="loginForm" class="dialog login-dialog">
+      <h2>请输入访问口令</h2>
+      <input id="loginPassword" type="password" placeholder="访问口令" autocomplete="current-password">
+      <p id="loginError" class="form-error" hidden></p>
+      <button type="submit" class="primary-action">进入</button>
+    </form>
+  </div>
+
   <main class="main">
     <header class="toolbar">
       <div class="query-head">
@@ -19,18 +28,37 @@
           </span>
         </div>
         <p id="queryMeta">选择查询后查看缓存的数据库信息。</p>
+        <p id="queryWarning" class="warning-banner" hidden></p>
       </div>
       <div class="actions">
         <button id="refreshBtn" class="primary-action">刷新</button>
         <button id="refreshAllBtn">全部刷新</button>
-        <button id="exportBtn">导出 Excel</button>
+        <button id="testConnBtn">连接测试</button>
+        <button id="exportBtn">导出本查询</button>
+        <button id="exportAllBtn">导出全部</button>
         <div class="column-menu">
           <button id="columnBtn" type="button" aria-expanded="false">列设置</button>
           <div id="columnPanel" class="column-panel" hidden></div>
         </div>
+        <select id="envFilter" title="按环境筛选"><option value="">全部环境</option></select>
+        <select id="autoRefresh" title="定时自动刷新">
+          <option value="0">不自动刷新</option>
+          <option value="30000">每 30 秒</option>
+          <option value="60000">每 1 分钟</option>
+          <option value="300000">每 5 分钟</option>
+          <option value="600000">每 10 分钟</option>
+        </select>
+        <label class="toggle"><input id="compareToggle" type="checkbox"><span>对比上次</span></label>
+        <button id="manageBtn">管理</button>
+        <button id="darkBtn" title="深色模式">🌙</button>
         <input id="searchInput" type="search" placeholder="搜索">
       </div>
     </header>
+
+    <section id="summaryBar" class="summary-bar" hidden>
+      <span id="summaryText"></span>
+      <label class="toggle"><input id="onlyFailed" type="checkbox"><span>只看失败</span></label>
+    </section>
 
     <section id="toast" class="toast" hidden></section>
     <div id="cellTooltip" class="cell-tooltip" hidden></div>
@@ -45,15 +73,75 @@
     </footer>
   </main>
 
+  <div id="connModal" class="overlay" hidden>
+    <div class="dialog wide-dialog">
+      <div class="dialog-head"><h2>连接测试</h2><button class="close-btn" data-close="connModal">×</button></div>
+      <div id="connResults" class="conn-results"></div>
+    </div>
+  </div>
+
+  <div id="manageModal" class="overlay" hidden>
+    <div class="dialog wide-dialog">
+      <div class="dialog-head">
+        <div class="tabs">
+          <button class="tab active" data-tab="instancesTab">实例管理</button>
+          <button class="tab" data-tab="sqlTab">查询管理</button>
+        </div>
+        <button class="close-btn" data-close="manageModal">×</button>
+      </div>
+
+      <section id="instancesTab" class="tab-panel">
+        <p class="hint">编辑数据库实例列表。端口、用户、密码留空则使用默认配置；密码显示为 ****** 时保持不变。</p>
+        <div class="table-scroll">
+          <table class="edit-table">
+            <thead><tr><th>环境</th><th>实例名称</th><th>服务器 IP</th><th>端口</th><th>用户</th><th>密码</th><th></th></tr></thead>
+            <tbody id="instancesBody"></tbody>
+          </table>
+        </div>
+        <div class="dialog-actions">
+          <button id="addInstanceBtn">新增一行</button>
+          <button id="saveInstancesBtn" class="primary-action">保存实例</button>
+        </div>
+      </section>
+
+      <section id="sqlTab" class="tab-panel" hidden>
+        <div class="sql-editor">
+          <div class="sql-list">
+            <select id="sqlPicker" size="10"></select>
+            <button id="newSqlBtn">新建查询</button>
+            <button id="deleteSqlBtn">删除查询</button>
+          </div>
+          <div class="sql-form">
+            <label>查询名称<input id="sqlName" type="text" placeholder="例如 instance_info"></label>
+            <label>SQL 内容<textarea id="sqlText" rows="12" placeholder="SELECT ..."></textarea></label>
+            <label>列名映射（每行一个，留空则用数据库返回的列名）<textarea id="sqlColumns" rows="6" placeholder="IP地址&#10;实例名称"></textarea></label>
+            <div class="dialog-actions">
+              <button id="saveSqlBtn" class="primary-action">保存查询</button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
   <script>
     const pageSize = Number({{ page_size|tojson }}) || 10;
-    const state = { queries: [], current: null, cache: null, page: 1, search: "", hiddenColumns: new Set(), columnWidths: {} };
-    const statusText = { valid: "有效", stale: "已过期", missing: "未缓存" };
+    const authEnabled = {{ auth_enabled|tojson }};
+    const state = {
+      queries: [], current: null, cache: null, page: 1, search: "",
+      hiddenColumns: new Set(), columnWidths: {}, sort: { col: null, dir: 1 },
+      envFilter: "", onlyFailed: false, compare: false, autoTimer: null, refreshing: false,
+    };
+    const statusText = { valid: "有效", stale: "已过期(SQL已改)", missing: "未缓存" };
     const $ = (id) => document.getElementById(id);
 
     async function api(url, options = {}) {
       const res = await fetch(url, options);
       const data = await res.json().catch(() => ({}));
+      if (res.status === 401 && data.auth_required) {
+        showLogin();
+        throw new Error(data.error || "需要登录");
+      }
       if (!res.ok) throw new Error(data.error || "请求失败");
       return data;
     }
@@ -62,12 +150,44 @@
       const toast = $("toast");
       toast.textContent = message;
       toast.hidden = false;
-      setTimeout(() => toast.hidden = true, 3500);
+      clearTimeout(showToast.timer);
+      showToast.timer = setTimeout(() => toast.hidden = true, 3500);
     }
 
+    /* ---------- 本地偏好（列显隐 / 列宽 / 主题 / 自动刷新） ---------- */
+    function prefKey(name) { return `dmprefs:${name}`; }
+    function loadQueryPrefs(name) {
+      try {
+        const raw = JSON.parse(localStorage.getItem(prefKey(name)) || "{}");
+        state.hiddenColumns = new Set(raw.hidden || []);
+        state.columnWidths = raw.widths || {};
+      } catch (_) { state.hiddenColumns = new Set(); state.columnWidths = {}; }
+    }
+    function saveQueryPrefs() {
+      if (!state.current) return;
+      localStorage.setItem(prefKey(state.current), JSON.stringify({
+        hidden: Array.from(state.hiddenColumns), widths: state.columnWidths,
+      }));
+    }
+    function loadGlobalPrefs() {
+      try {
+        const g = JSON.parse(localStorage.getItem("dmprefs:global") || "{}");
+        if (g.dark) document.body.classList.add("dark");
+        if (g.autoRefreshMs) $("autoRefresh").value = String(g.autoRefreshMs);
+      } catch (_) { /* ignore */ }
+    }
+    function saveGlobalPrefs() {
+      localStorage.setItem("dmprefs:global", JSON.stringify({
+        dark: document.body.classList.contains("dark"),
+        autoRefreshMs: Number($("autoRefresh").value) || 0,
+      }));
+    }
+
+    /* ---------- 查询列表与选择 ---------- */
     async function loadQueries() {
       const data = await api("/api/queries");
       state.queries = data.queries || [];
+      state.cacheMaxAge = data.cache_max_age_minutes || 0;
       renderQuerySelect();
       if (!state.current && state.queries.length > 0) {
         await selectQuery(state.queries[0].name);
@@ -77,6 +197,10 @@
     async function selectQuery(name) {
       state.current = name;
       state.page = 1;
+      state.sort = { col: null, dir: 1 };
+      state.envFilter = "";
+      $("envFilter").value = "";
+      loadQueryPrefs(name);
       syncQuerySelect();
       updateQueryStatus(queryStatusFor(name));
       try {
@@ -100,6 +224,7 @@
         updateQueryStatus("missing");
         $("resultArea").innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
         $("pager").hidden = true;
+        $("summaryBar").hidden = true;
       }
       await loadQueries();
     }
@@ -116,9 +241,7 @@
 
     function syncQuerySelect() {
       const select = $("querySelect");
-      if (state.current && select.value !== state.current) {
-        select.value = state.current;
-      }
+      if (state.current && select.value !== state.current) select.value = state.current;
     }
 
     function queryStatusFor(name) {
@@ -134,6 +257,8 @@
 
     async function refreshCurrent() {
       if (!state.current) return showToast("请先选择查询。");
+      if (state.refreshing) return;
+      state.refreshing = true;
       $("refreshBtn").disabled = true;
       try {
         state.cache = await api(`/api/query/${encodeURIComponent(state.current)}/refresh`, { method: "POST" });
@@ -143,96 +268,74 @@
       } catch (err) {
         showToast(err.message);
       } finally {
+        state.refreshing = false;
         $("refreshBtn").disabled = false;
         await loadQueries();
       }
     }
 
-    function isKeyValue(cache) {
-      return cache.display_mode === "key_value";
-    }
-
-    function buildKeyValue(cache) {
-      const keys = [];
-      const values = {};
-      const errors = {};
-      const instanceKeys = [];
-      const instanceLabels = [];
-      for (const [index, row] of (cache.rows || []).entries()) {
-        const instanceKey = `${index}:${row.instance || ""}`;
-        instanceKeys.push(instanceKey);
-        instanceLabels.push(row.instance);
-        values[instanceKey] = {};
-        if (row.error) errors[instanceKey] = row.error;
-        for (const item of row.data || []) {
-          if (!keys.includes(item[0])) keys.push(item[0]);
-          const val = item[1];
-          if (val != null && val !== "") {
-            values[instanceKey][item[0]] = val;
-          } else if (!(item[0] in values[instanceKey])) {
-            values[instanceKey][item[0]] = "";
-          }
-        }
-      }
-      const headers = ["item", ...instanceLabels];
-      const body = keys.map(key => [key, ...instanceKeys.map(instanceKey => values[instanceKey]?.[key] ?? errors[instanceKey] ?? "")]);
-      if (!body.length && Object.keys(errors).length) {
-        body.push(["error", ...instanceKeys.map(instanceKey => errors[instanceKey] || "")]);
-      }
-      return { headers, body, mode: "keyValue", rowHasError: body.map(() => (cache.rows || []).some(row => row.error)), lockedColumns: 1 };
-    }
-
-    function buildMeta(cache) {
-      const labels = cache.column_labels || [];
+    /* ---------- 表格模型 ---------- */
+    function buildMeta(cacheLike) {
+      const labels = cacheLike.column_labels || [];
       const headers = ["instance", "env", ...labels];
-      const body = [];
-      const rowHasError = [];
-      for (const row of cache.rows || []) {
+      const body = [], rowHasError = [], rowWarning = [], keys = [];
+      for (const [i, row] of (cacheLike.rows || []).entries()) {
         let data = Array.isArray(row.data) ? [...row.data] : [];
-        if (row.error) {
-          data = [row.error, ...Array(Math.max(0, labels.length - 1)).fill("")];
-        }
-        if (data.length < labels.length) {
-          data = data.concat(Array(labels.length - data.length).fill(""));
-        } else if (data.length > labels.length) {
-          data = data.slice(0, labels.length);
-        }
+        if (row.error) data = [row.error, ...Array(Math.max(0, labels.length - 1)).fill("")];
+        data = normalizeLength(data, labels.length);
         body.push([row.instance, row.env || "", ...data]);
         rowHasError.push(Boolean(row.error));
+        rowWarning.push(row.warning || "");
+        keys.push(`m:${row.idx ?? i}`);
       }
-      return { headers, body, mode: "meta", rowHasError, lockedColumns: 3 };
+      return { headers, body, mode: "meta", rowHasError, rowWarning, keys, lockedColumns: 3 };
     }
 
-    function buildFlat(cache) {
+    function buildFlat(cacheLike) {
       let base = [];
-      for (const row of cache.rows || []) {
+      for (const row of cacheLike.rows || []) {
         if ((row.columns || []).length > base.length) base = row.columns;
       }
       if (!base.length) {
-        const maxValues = Math.max(0, ...(cache.rows || []).flatMap(row => (row.data || []).map(item => item.length)));
+        const maxValues = Math.max(0, ...(cacheLike.rows || []).flatMap(row => (row.data || []).map(item => item.length)));
         base = Array.from({ length: maxValues }, (_, index) => `col_${index + 1}`);
       }
       const headers = ["instance", "env", ...base, "error"];
-      const body = [];
-      const rowHasError = [];
-      for (const row of cache.rows || []) {
+      const body = [], rowHasError = [], rowWarning = [], keys = [];
+      for (const [i, row] of (cacheLike.rows || []).entries()) {
+        const idx = row.idx ?? i;
         if (row.error) {
           body.push([row.instance, row.env || "", ...base.map(() => ""), row.error]);
-          rowHasError.push(true);
+          rowHasError.push(true); rowWarning.push(""); keys.push(`f:${idx}:0`);
         } else {
           const dataRows = row.data || [];
           if (!dataRows.length) {
             body.push([row.instance, row.env || "", ...base.map(() => ""), ""]);
-            rowHasError.push(false);
+            rowHasError.push(false); rowWarning.push(row.warning || ""); keys.push(`f:${idx}:0`);
             continue;
           }
-          for (const item of dataRows) {
+          dataRows.forEach((item, n) => {
             body.push([row.instance, row.env || "", ...normalizeLength(item, base.length), ""]);
-            rowHasError.push(false);
-          }
+            rowHasError.push(false); rowWarning.push(row.warning || ""); keys.push(`f:${idx}:${n}`);
+          });
         }
       }
-      return { headers, body, mode: "flat", rowHasError, lockedColumns: 2 };
+      return { headers, body, mode: "flat", rowHasError, rowWarning, keys, lockedColumns: 2 };
+    }
+
+    function buildTable(cacheLike) {
+      return cacheLike.column_labels ? buildMeta(cacheLike) : buildFlat(cacheLike);
+    }
+
+    function buildPrevLookup(cache) {
+      if (!cache.previous || !cache.previous.rows) return null;
+      const prevLike = cache.column_labels
+        ? { column_labels: cache.column_labels, rows: cache.previous.rows }
+        : { rows: cache.previous.rows };
+      const model = buildTable(prevLike);
+      const lookup = {};
+      model.keys.forEach((key, i) => { lookup[key] = model.body[i]; });
+      return lookup;
     }
 
     function normalizeLength(values, length) {
@@ -247,60 +350,117 @@
       return row.join(" ").toLowerCase().includes(keyword);
     }
 
+    /* ---------- 渲染 ---------- */
     function render() {
       const cache = state.cache;
       if (!cache) return;
-      $("queryMeta").textContent = `上次查询：${cache.queried_at || "从未查询"} | ${statusText[cache.status] || cache.status}`;
+      $("queryMeta").textContent = `上次查询：${cache.queried_at || "从未查询"} | ${statusText[cache.status] || cache.status}${ageText(cache)}`;
       updateQueryStatus(cache.status);
 
-      const table = cache.column_labels ? buildMeta(cache) : (isKeyValue(cache) ? buildKeyValue(cache) : buildFlat(cache));
+      const table = buildTable(cache);
+      const prevLookup = state.compare ? buildPrevLookup(cache) : null;
       syncHiddenColumns(table);
       renderColumnPanel(table);
-      let rowItems = table.body.map((row, index) => {
-        const error = Boolean(table.rowHasError[index]);
-        return { row, index, error };
-      }).filter(item => rowMatches(item.row));
+      renderEnvFilter(cache);
+      renderSummary(table);
+      renderWarningBanner(table);
+
+      let rowItems = table.body.map((row, index) => ({
+        row, index, error: Boolean(table.rowHasError[index]), key: table.keys[index],
+      })).filter(item => rowMatches(item.row)
+        && (!state.envFilter || String(item.row[1]) === state.envFilter)
+        && (!state.onlyFailed || item.error));
+
+      if (state.sort.col != null) {
+        const col = state.sort.col, dir = state.sort.dir;
+        rowItems.sort((a, b) => compareValues(a.row[col], b.row[col]) * dir);
+      }
 
       const count = rowItems.length;
       const totalPages = Math.max(1, Math.ceil(count / pageSize));
       state.page = Math.min(Math.max(1, state.page), totalPages);
-
-      let headers = table.headers;
+      const headers = table.headers;
       const start = (state.page - 1) * pageSize;
-      rowItems = rowItems.slice(start, start + pageSize);
+      const pageItems = rowItems.slice(start, start + pageSize);
 
-      const renderRows = rowItems.map(item => {
+      const renderRows = pageItems.map(item => {
+        const prevRow = prevLookup ? prevLookup[item.key] : null;
         const cls = item.error ? "error-row" : "";
-        return `<tr class="${cls}">${item.row.map((cell, index) => renderCell("td", cell, index, table)).join("")}</tr>`;
+        const cells = item.row.map((cell, index) => {
+          const changed = prevLookup && prevRow && String(prevRow[index] ?? "") !== String(cell ?? "");
+          return renderCell("td", cell, index, table, changed);
+        }).join("");
+        return `<tr class="${cls}">${cells}</tr>`;
       }).join("");
 
       $("resultArea").innerHTML = `
         <div class="table-wrap">
           <table class="excel-table mode-${table.mode}" style="--frozen-1-width:${state.columnWidths[0] || defaultColumnWidth(0, table)}px;--frozen-2-width:${state.columnWidths[1] || defaultColumnWidth(1, table)}px">
-            <thead><tr>${headers.map((h, index) => renderCell("th", h, index, table)).join("")}</tr></thead>
-            <tbody>${renderRows}</tbody>
+            <thead><tr>${headers.map((h, index) => renderCell("th", h, index, table, false)).join("")}</tr></thead>
+            <tbody>${renderRows || `<tr><td colspan="${headers.length}" class="empty-cell">没有符合条件的数据</td></tr>`}</tbody>
           </table>
-        </div>
-      `;
+        </div>`;
       initColumnResize();
+      initHeaderSort();
       $("pager").hidden = false;
-      $("pageInfo").textContent = `第 ${state.page}/${totalPages} 页`;
+      $("pageInfo").textContent = `第 ${state.page}/${totalPages} 页，共 ${count} 行`;
       $("prevPage").disabled = state.page <= 1;
       $("nextPage").disabled = state.page >= totalPages;
       $("jumpPage").max = totalPages;
       $("jumpPage").value = state.page;
     }
 
-    function renderCell(tag, value, index, table) {
+    function ageText(cache) {
+      if (!cache.queried_at) return "";
+      const ts = Date.parse(cache.queried_at.replace(" ", "T"));
+      if (Number.isNaN(ts)) return "";
+      const minutes = Math.floor((Date.now() - ts) / 60000);
+      const human = minutes < 1 ? "刚刚" : minutes < 60 ? `${minutes} 分钟前` : minutes < 1440 ? `${Math.floor(minutes / 60)} 小时前` : `${Math.floor(minutes / 1440)} 天前`;
+      const max = state.cacheMaxAge || 0;
+      const stale = max > 0 && minutes > max;
+      return ` | 数据${stale ? "已过期·" : ""}${human}`;
+    }
+
+    function compareValues(a, b) {
+      const na = parseFloat(a), nb = parseFloat(b);
+      const aNum = a !== "" && a != null && !Number.isNaN(na) && /^-?\d+(\.\d+)?$/.test(String(a).trim());
+      const bNum = b !== "" && b != null && !Number.isNaN(nb) && /^-?\d+(\.\d+)?$/.test(String(b).trim());
+      if (aNum && bNum) return na - nb;
+      return String(a ?? "").localeCompare(String(b ?? ""), "zh");
+    }
+
+    function renderSummary(table) {
+      const total = table.rowHasError.length;
+      const failed = table.rowHasError.filter(Boolean).length;
+      if (!total) { $("summaryBar").hidden = true; return; }
+      $("summaryBar").hidden = false;
+      $("summaryText").textContent = `共 ${total} 项 · 成功 ${total - failed} · 失败 ${failed}`;
+    }
+
+    function renderWarningBanner(table) {
+      const warnings = [...new Set(table.rowWarning.filter(Boolean))];
+      const banner = $("queryWarning");
+      if (!warnings.length) { banner.hidden = true; return; }
+      banner.hidden = false;
+      banner.textContent = `⚠ ${warnings[0]}`;
+    }
+
+    function renderCell(tag, value, index, table, changed) {
       const text = String(value ?? "");
       const classes = [];
       if (index < (table.lockedColumns || 2)) classes.push(`frozen-col frozen-${index + 1}`);
       if (index === 0) classes.push("row-label");
       if (state.hiddenColumns.has(index)) classes.push("hidden-col");
       if (isNumericText(text)) classes.push("numeric");
+      if (changed) classes.push("cell-changed");
       const width = state.columnWidths[index] || defaultColumnWidth(index, table);
-      const resize = tag === "th" ? '<span class="col-resizer" data-col="' + index + '"></span>' : "";
-      return `<${tag} class="${classes.join(" ")}" data-col="${index}" data-tooltip="${escapeAttr(text)}" style="width:${width}px;min-width:${width}px;max-width:${width}px">${escapeHtml(text)}${resize}</${tag}>`;
+      let extras = "";
+      if (tag === "th") {
+        const arrow = state.sort.col === index ? (state.sort.dir > 0 ? " ▲" : " ▼") : "";
+        extras = `<span class="col-resizer" data-col="${index}"></span>`;
+        return `<th class="${classes.join(" ")} sortable" data-col="${index}" data-tooltip="${escapeAttr(text)}" style="width:${width}px;min-width:${width}px;max-width:${width}px">${escapeHtml(text)}<span class="sort-arrow">${arrow}</span>${extras}</th>`;
+      }
+      return `<td class="${classes.join(" ")}" data-col="${index}" data-tooltip="${escapeAttr(text)}" style="width:${width}px;min-width:${width}px;max-width:${width}px">${escapeHtml(text)}</td>`;
     }
 
     function defaultColumnWidth(index, table) {
@@ -333,25 +493,37 @@
       const locked = table.lockedColumns || 2;
       const headers = table.headers || [];
       panel.innerHTML = headers.map((header, index) => index < locked ? "" : `
-        <label>
-          <input type="checkbox" data-col="${index}" ${state.hiddenColumns.has(index) ? "" : "checked"}>
-          <span>${escapeHtml(header)}</span>
-        </label>
+        <label><input type="checkbox" data-col="${index}" ${state.hiddenColumns.has(index) ? "" : "checked"}><span>${escapeHtml(header)}</span></label>
       `).join("");
       panel.querySelectorAll("input[type='checkbox']").forEach(input => {
         input.addEventListener("change", () => {
           const col = Number(input.dataset.col);
-          if (input.checked) state.hiddenColumns.delete(col);
-          else state.hiddenColumns.add(col);
+          if (input.checked) state.hiddenColumns.delete(col); else state.hiddenColumns.add(col);
+          saveQueryPrefs();
           render();
         });
       });
     }
 
+    function renderEnvFilter(cache) {
+      const envs = [...new Set((cache.rows || []).map(row => row.env).filter(Boolean))];
+      const select = $("envFilter");
+      const current = state.envFilter;
+      select.innerHTML = '<option value="">全部环境</option>' + envs.map(e => `<option value="${escapeAttr(e)}">${escapeHtml(e)}</option>`).join("");
+      select.value = envs.includes(current) ? current : "";
+      if (select.value !== current) state.envFilter = select.value;
+    }
+
+    function visibleHeaders(table) {
+      return table.headers.filter((_, index) => !state.hiddenColumns.has(index));
+    }
+
+    /* ---------- 列宽拖拽 / 列头排序 ---------- */
     function initColumnResize() {
       document.querySelectorAll(".col-resizer").forEach(handle => {
         handle.addEventListener("mousedown", event => {
           event.preventDefault();
+          event.stopPropagation();
           const col = Number(handle.dataset.col);
           const startX = event.clientX;
           const th = handle.closest("th");
@@ -359,28 +531,21 @@
           const overlay = document.createElement("div");
           overlay.className = "resize-overlay";
           document.body.appendChild(overlay);
-
           const onMove = moveEvent => {
             const width = Math.max(60, Math.min(500, Math.round(startWidth + moveEvent.clientX - startX)));
             state.columnWidths[col] = width;
-            if (col === 0) {
-              const table = document.querySelector(".excel-table");
-              if (table) table.style.setProperty("--frozen-1-width", `${width}px`);
-            }
-            if (col === 1) {
-              const table = document.querySelector(".excel-table");
-              if (table) table.style.setProperty("--frozen-2-width", `${width}px`);
-            }
+            const table = document.querySelector(".excel-table");
+            if (col === 0 && table) table.style.setProperty("--frozen-1-width", `${width}px`);
+            if (col === 1 && table) table.style.setProperty("--frozen-2-width", `${width}px`);
             document.querySelectorAll(`[data-col="${col}"]`).forEach(cell => {
-              cell.style.width = `${width}px`;
-              cell.style.minWidth = `${width}px`;
-              cell.style.maxWidth = `${width}px`;
+              cell.style.width = `${width}px`; cell.style.minWidth = `${width}px`; cell.style.maxWidth = `${width}px`;
             });
           };
           const onUp = () => {
             document.removeEventListener("mousemove", onMove);
             document.removeEventListener("mouseup", onUp);
             overlay.remove();
+            saveQueryPrefs();
           };
           document.addEventListener("mousemove", onMove);
           document.addEventListener("mouseup", onUp);
@@ -388,63 +553,262 @@
       });
     }
 
-    function escapeHtml(value) {
-      return String(value ?? "").replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+    function initHeaderSort() {
+      document.querySelectorAll(".excel-table th.sortable").forEach(th => {
+        th.addEventListener("click", event => {
+          if (event.target.classList.contains("col-resizer")) return;
+          const col = Number(th.dataset.col);
+          if (state.sort.col !== col) state.sort = { col, dir: 1 };
+          else if (state.sort.dir === 1) state.sort.dir = -1;
+          else state.sort = { col: null, dir: 1 };
+          render();
+        });
+      });
     }
 
-    function escapeAttr(value) {
-      return escapeHtml(value).replace(/`/g, "&#96;");
+    /* ---------- 复制单元格 / 整行 ---------- */
+    function copyText(text) {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(() => showToast("已复制")).catch(() => fallbackCopy(text));
+      } else { fallbackCopy(text); }
+    }
+    function fallbackCopy(text) {
+      const ta = document.createElement("textarea");
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); showToast("已复制"); } catch (_) { showToast("复制失败"); }
+      ta.remove();
     }
 
+    /* ---------- 工具提示 ---------- */
     function initCellTooltip() {
       const tooltip = $("cellTooltip");
-      const hide = () => {
-        tooltip.hidden = true;
-        tooltip.textContent = "";
-      };
+      const hide = () => { tooltip.hidden = true; tooltip.textContent = ""; };
       const show = (event, cell) => {
         const text = cell.dataset.tooltip || "";
         if (!text) return hide();
         if (cell.scrollWidth <= cell.clientWidth && cell.scrollHeight <= cell.clientHeight) return hide();
-        tooltip.textContent = text;
-        tooltip.hidden = false;
-        move(event);
+        tooltip.textContent = text; tooltip.hidden = false; move(event);
       };
       const move = event => {
         if (tooltip.hidden) return;
-        const margin = 12;
-        const offset = 14;
+        const margin = 12, offset = 14;
         const rect = tooltip.getBoundingClientRect();
-        let left = event.clientX + offset;
-        let top = event.clientY + offset;
-        if (left + rect.width + margin > window.innerWidth) {
-          left = Math.max(margin, event.clientX - rect.width - offset);
-        }
-        if (top + rect.height + margin > window.innerHeight) {
-          top = Math.max(margin, event.clientY - rect.height - offset);
-        }
-        tooltip.style.left = `${left}px`;
-        tooltip.style.top = `${top}px`;
+        let left = event.clientX + offset, top = event.clientY + offset;
+        if (left + rect.width + margin > window.innerWidth) left = Math.max(margin, event.clientX - rect.width - offset);
+        if (top + rect.height + margin > window.innerHeight) top = Math.max(margin, event.clientY - rect.height - offset);
+        tooltip.style.left = `${left}px`; tooltip.style.top = `${top}px`;
       };
-
       document.addEventListener("mouseover", event => {
         const cell = event.target.closest(".excel-table th, .excel-table td");
-        if (!cell) return;
-        show(event, cell);
+        if (!cell) return; show(event, cell);
       });
       document.addEventListener("mousemove", move);
       document.addEventListener("mouseout", event => {
         if (event.target.closest(".excel-table th, .excel-table td")) hide();
       });
       window.addEventListener("scroll", hide, true);
+      document.addEventListener("dblclick", event => {
+        const cell = event.target.closest(".excel-table td");
+        if (!cell) return;
+        if (event.shiftKey) {
+          const tr = cell.closest("tr");
+          const text = Array.from(tr.querySelectorAll("td")).map(td => td.dataset.tooltip || "").join("\t");
+          copyText(text);
+        } else {
+          copyText(cell.dataset.tooltip || "");
+        }
+      });
     }
 
+    /* ---------- 登录 ---------- */
+    function showLogin() { $("loginOverlay").hidden = false; $("loginPassword").focus(); }
+    function hideLogin() { $("loginOverlay").hidden = true; }
+
+    /* ---------- HTML 转义 ---------- */
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+    }
+    function escapeAttr(value) { return escapeHtml(value).replace(/`/g, "&#96;"); }
+
+    /* ---------- 连接测试 ---------- */
+    async function runConnTest() {
+      $("testConnBtn").disabled = true;
+      $("connResults").innerHTML = '<div class="conn-loading">正在逐台测试连接...</div>';
+      openModal("connModal");
+      try {
+        const data = await api("/api/test-connections", { method: "POST" });
+        const rows = (data.results || []).filter(Boolean).map(item => `
+          <tr class="${item.ok ? "" : "error-row"}">
+            <td>${escapeHtml(item.instance)}</td><td>${escapeHtml(item.env || "")}</td>
+            <td>${escapeHtml(item.host || "")}</td>
+            <td>${item.ok ? "✅ 可连接" : "❌ 失败"}</td>
+            <td>${item.elapsed_ms} ms</td>
+            <td class="conn-err" data-tooltip="${escapeAttr(item.error || "")}">${escapeHtml(item.error || "")}</td>
+          </tr>`).join("");
+        $("connResults").innerHTML = `
+          <p class="conn-summary">成功 ${data.ok} · 失败 ${data.failed}</p>
+          <div class="table-scroll"><table class="edit-table">
+            <thead><tr><th>实例</th><th>环境</th><th>IP</th><th>结果</th><th>耗时</th><th>错误信息</th></tr></thead>
+            <tbody>${rows || '<tr><td colspan="6">暂无实例</td></tr>'}</tbody>
+          </table></div>`;
+      } catch (err) {
+        $("connResults").innerHTML = `<div class="conn-loading">${escapeHtml(err.message)}</div>`;
+      } finally {
+        $("testConnBtn").disabled = false;
+      }
+    }
+
+    /* ---------- 管理：实例 ---------- */
+    function instanceRowHtml(item) {
+      const v = (k) => escapeAttr((item && item[k] != null) ? item[k] : "");
+      return `<tr>
+        <td><input data-k="env" value="${v("env")}"></td>
+        <td><input data-k="label" value="${v("label")}"></td>
+        <td><input data-k="host" value="${v("host")}"></td>
+        <td><input data-k="port" value="${v("port")}" placeholder="默认"></td>
+        <td><input data-k="user" value="${v("user")}" placeholder="默认"></td>
+        <td><input data-k="password" value="${v("password")}" placeholder="默认"></td>
+        <td><button class="del-row">删除</button></td>
+      </tr>`;
+    }
+    async function loadInstancesEditor() {
+      const data = await api("/api/config");
+      const body = $("instancesBody");
+      body.innerHTML = (data.instances || []).map(instanceRowHtml).join("") || instanceRowHtml({});
+      body.querySelectorAll(".del-row").forEach(btn => btn.addEventListener("click", () => btn.closest("tr").remove()));
+    }
+    async function saveInstances() {
+      const instances = Array.from($("instancesBody").querySelectorAll("tr")).map(tr => {
+        const obj = {};
+        tr.querySelectorAll("input").forEach(input => { obj[input.dataset.k] = input.value.trim(); });
+        return obj;
+      }).filter(o => o.label || o.host);
+      if (!instances.length && !confirm("当前实例列表为空，保存后会清空所有实例配置。确定继续吗？")) return;
+      try {
+        const res = await api("/api/instances", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ instances }),
+        });
+        showToast(`已保存 ${res.count} 个实例。`);
+      } catch (err) { showToast(err.message); }
+    }
+
+    /* ---------- 管理：SQL ---------- */
+    async function loadSqlList(selectName) {
+      const data = await api("/api/queries");
+      const picker = $("sqlPicker");
+      picker.innerHTML = (data.queries || []).map(q => `<option value="${escapeAttr(q.name)}">${escapeHtml(q.name)}</option>`).join("");
+      if (selectName) picker.value = selectName;
+      if (picker.value) await loadSqlDetail(picker.value);
+    }
+    async function loadSqlDetail(name) {
+      const data = await api(`/api/sql/${encodeURIComponent(name)}`);
+      $("sqlName").value = data.name || "";
+      $("sqlText").value = data.sql || "";
+      $("sqlColumns").value = (data.columns || []).join("\n");
+    }
+    async function saveSql() {
+      const name = $("sqlName").value.trim();
+      if (!name) return showToast("请填写查询名称。");
+      try {
+        await api(`/api/sql/${encodeURIComponent(name)}`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sql: $("sqlText").value, columns: $("sqlColumns").value }),
+        });
+        showToast("查询已保存。");
+        await loadSqlList(name);
+        await loadQueries();
+      } catch (err) { showToast(err.message); }
+    }
+    async function deleteSql() {
+      const name = $("sqlPicker").value;
+      if (!name) return;
+      if (!confirm(`确定删除查询「${name}」吗？（同时清除其缓存）`)) return;
+      try {
+        await api(`/api/sql/${encodeURIComponent(name)}`, { method: "DELETE" });
+        showToast("已删除。");
+        if (state.current === name) { state.current = null; state.cache = null; }
+        await loadSqlList();
+        await loadQueries();
+      } catch (err) { showToast(err.message); }
+    }
+
+    /* ---------- 模态框 ---------- */
+    function openModal(id) { $(id).hidden = false; }
+    function closeModal(id) { $(id).hidden = true; }
+
+    /* ---------- 全部刷新（带进度、并发） ---------- */
+    async function refreshAll() {
+      const names = state.queries.map(q => q.name);
+      if (!names.length) return showToast("暂无查询。");
+      $("refreshAllBtn").disabled = true;
+      let done = 0; const concurrency = 3; let cursor = 0;
+      const worker = async () => {
+        while (cursor < names.length) {
+          const name = names[cursor++];
+          try { await api(`/api/query/${encodeURIComponent(name)}/refresh`, { method: "POST" }); }
+          catch (_) { /* 单个失败不阻断整体 */ }
+          done += 1;
+          showToast(`全部刷新中 ${done}/${names.length} ...`);
+        }
+      };
+      try {
+        await Promise.all(Array.from({ length: Math.min(concurrency, names.length) }, worker));
+        showToast("全部查询刷新完成。");
+        if (state.current) await selectQuery(state.current);
+      } finally {
+        $("refreshAllBtn").disabled = false;
+        await loadQueries();
+      }
+    }
+
+    function setAutoRefresh() {
+      if (state.autoTimer) { clearInterval(state.autoTimer); state.autoTimer = null; }
+      const ms = Number($("autoRefresh").value) || 0;
+      saveGlobalPrefs();
+      if (ms > 0) state.autoTimer = setInterval(() => { if (state.current) refreshCurrent(); }, ms);
+    }
+
+    /* ---------- 导出 ---------- */
+    function currentFilterParams() {
+      const params = new URLSearchParams();
+      if (state.search.trim()) params.set("search", state.search.trim());
+      if (state.envFilter) params.set("env", state.envFilter);
+      if (state.onlyFailed) params.set("only_failed", "1");
+      return params;
+    }
+
+    function exportCurrent() {
+      if (!state.current) return showToast("请先选择查询。");
+      const params = currentFilterParams();
+      if (state.cache) {
+        const table = buildTable(state.cache);
+        params.set("columns", visibleHeaders(table).join("\u0001"));
+      }
+      location.href = `/api/query/${encodeURIComponent(state.current)}/export?${params.toString()}`;
+    }
+
+    /* ---------- 事件绑定 ---------- */
     $("refreshBtn").addEventListener("click", refreshCurrent);
     $("querySelect").addEventListener("change", e => selectQuery(e.target.value));
-    $("exportBtn").addEventListener("click", () => {
-      if (!state.current) return showToast("请先选择查询。");
-      location.href = `/api/query/${encodeURIComponent(state.current)}/export`;
+    $("exportBtn").addEventListener("click", exportCurrent);
+    $("exportAllBtn").addEventListener("click", () => {
+      const qs = currentFilterParams().toString();
+      location.href = qs ? `/api/export-all?${qs}` : "/api/export-all";
     });
+    $("refreshAllBtn").addEventListener("click", refreshAll);
+    $("testConnBtn").addEventListener("click", runConnTest);
+    $("manageBtn").addEventListener("click", async () => {
+      openModal("manageModal");
+      await loadInstancesEditor();
+      await loadSqlList();
+    });
+    $("darkBtn").addEventListener("click", () => { document.body.classList.toggle("dark"); saveGlobalPrefs(); });
+    $("autoRefresh").addEventListener("change", setAutoRefresh);
+    $("compareToggle").addEventListener("change", e => { state.compare = e.target.checked; render(); });
+    $("envFilter").addEventListener("change", e => { state.envFilter = e.target.value; state.page = 1; render(); });
+    $("onlyFailed").addEventListener("change", e => { state.onlyFailed = e.target.checked; state.page = 1; render(); });
+
     $("columnBtn").addEventListener("click", event => {
       event.stopPropagation();
       const panel = $("columnPanel");
@@ -458,26 +822,62 @@
         $("columnBtn").setAttribute("aria-expanded", "false");
       }
     });
-    $("refreshAllBtn").addEventListener("click", async () => {
-      $("refreshAllBtn").disabled = true;
-      try {
-        await api("/api/refresh-all", { method: "POST" });
-        showToast("全部查询刷新完成。");
-        if (state.current) await selectQuery(state.current);
-      } catch (err) {
-        showToast(err.message);
-      } finally {
-        $("refreshAllBtn").disabled = false;
-        await loadQueries();
-      }
-    });
     $("searchInput").addEventListener("input", e => { state.search = e.target.value; state.page = 1; render(); });
     $("prevPage").addEventListener("click", () => { state.page -= 1; render(); });
     $("nextPage").addEventListener("click", () => { state.page += 1; render(); });
     $("jumpPage").addEventListener("change", e => { state.page = Number(e.target.value) || 1; render(); });
 
+    document.querySelectorAll(".close-btn").forEach(btn => btn.addEventListener("click", () => closeModal(btn.dataset.close)));
+    document.querySelectorAll(".overlay").forEach(ov => ov.addEventListener("click", e => { if (e.target === ov && ov.id !== "loginOverlay") ov.hidden = true; }));
+    document.querySelectorAll(".tab").forEach(tab => tab.addEventListener("click", () => {
+      document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+      tab.classList.add("active");
+      document.querySelectorAll(".tab-panel").forEach(p => p.hidden = true);
+      $(tab.dataset.tab).hidden = false;
+    }));
+    $("addInstanceBtn").addEventListener("click", () => {
+      const body = $("instancesBody");
+      body.insertAdjacentHTML("beforeend", instanceRowHtml({}));
+      const tr = body.lastElementChild;
+      tr.querySelector(".del-row").addEventListener("click", () => tr.remove());
+    });
+    $("saveInstancesBtn").addEventListener("click", saveInstances);
+    $("sqlPicker").addEventListener("change", e => loadSqlDetail(e.target.value));
+    $("newSqlBtn").addEventListener("click", () => { $("sqlName").value = ""; $("sqlText").value = ""; $("sqlColumns").value = ""; $("sqlName").focus(); });
+    $("saveSqlBtn").addEventListener("click", saveSql);
+    $("deleteSqlBtn").addEventListener("click", deleteSql);
+
+    $("loginForm").addEventListener("submit", async e => {
+      e.preventDefault();
+      try {
+        await api("/api/login", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ password: $("loginPassword").value }),
+        });
+        hideLogin();
+        $("loginError").hidden = true;
+        setAutoRefresh();
+        boot();
+      } catch (err) {
+        $("loginError").hidden = false;
+        $("loginError").textContent = err.message;
+      }
+    });
+
+    /* ---------- 启动 ---------- */
+    async function boot() {
+      try { await loadQueries(); } catch (err) { showToast(err.message); }
+    }
+    loadGlobalPrefs();
     initCellTooltip();
-    loadQueries().catch(err => showToast(err.message));
+    (async () => {
+      try {
+        const session = await api("/api/session");
+        if (session.auth_enabled && !session.authed) { showLogin(); return; }
+      } catch (_) { /* 会话探测失败时仍尝试加载 */ }
+      setAutoRefresh();
+      boot();
+    })();
   </script>
 </body>
 </html>

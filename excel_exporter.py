@@ -1,44 +1,119 @@
 from __future__ import annotations
 
+import re
 from io import BytesIO
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 
-def export_query_to_excel(cache: Dict[str, Any], search: str = "") -> BytesIO:
+def export_query_to_excel(
+    cache: Dict[str, Any],
+    search: str = "",
+    visible_columns: Optional[List[str]] = None,
+    env: str = "",
+    only_failed: bool = False,
+) -> BytesIO:
     wb = Workbook()
     ws = wb.active
-    ws.title = cache.get("query_name", "query")[:31]
-    table = build_display_table(cache)
-    rows = filter_rows(table["rows"], search)
-
-    ws.append(table["headers"])
-    for cell in ws[1]:
-        cell.font = Font(bold=True)
-        cell.fill = PatternFill("solid", fgColor="E9EEF7")
-
-    for row in rows:
-        ws.append(row)
-
-    for index, _ in enumerate(table["headers"], start=1):
-        column = get_column_letter(index)
-        width = max(len(str(ws.cell(row=row, column=index).value or "")) for row in range(1, ws.max_row + 1))
-        ws.column_dimensions[column].width = min(max(width + 2, 12), 42)
-
+    _fill_sheet(ws, cache, search, visible_columns, env, only_failed)
     stream = BytesIO()
     wb.save(stream)
     stream.seek(0)
     return stream
 
 
+def export_all_to_excel(
+    caches: List[Dict[str, Any]],
+    search: str = "",
+    env: str = "",
+    only_failed: bool = False,
+) -> BytesIO:
+    """把多个查询导出到同一个工作簿，每个查询一个工作表。"""
+    wb = Workbook()
+    wb.remove(wb.active)
+    used_titles: set[str] = set()
+    for cache in caches:
+        title = _unique_sheet_title(cache.get("query_name", "query"), used_titles)
+        ws = wb.create_sheet(title=title)
+        _fill_sheet(ws, cache, search, None, env, only_failed)
+    if not wb.sheetnames:
+        wb.create_sheet(title="empty")
+    stream = BytesIO()
+    wb.save(stream)
+    stream.seek(0)
+    return stream
+
+
+def _prefilter_cache(cache: Dict[str, Any], env: str, only_failed: bool) -> Dict[str, Any]:
+    """按环境与“只看失败”过滤实例行，使导出与界面所见一致。"""
+    rows = cache.get("rows", [])
+    filtered = rows
+    if env:
+        filtered = [row for row in filtered if str((row or {}).get("env", "")) == env]
+    if only_failed:
+        filtered = [row for row in filtered if (row or {}).get("error")]
+    if filtered is rows:
+        return cache
+    new_cache = dict(cache)
+    new_cache["rows"] = filtered
+    return new_cache
+
+
+def _fill_sheet(
+    ws,
+    cache: Dict[str, Any],
+    search: str,
+    visible_columns: Optional[List[str]],
+    env: str = "",
+    only_failed: bool = False,
+) -> None:
+    ws.title = ws.title  # 占位，标题已在创建时设置
+    cache = _prefilter_cache(cache, env, only_failed)
+    table = build_display_table(cache)
+    headers = table["headers"]
+    rows = filter_rows(table["rows"], search)
+    keep = _keep_indexes(headers, visible_columns)
+
+    ws.append([headers[i] for i in keep])
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+        cell.fill = PatternFill("solid", fgColor="E9EEF7")
+
+    for row in rows:
+        ws.append([row[i] if i < len(row) else "" for i in keep])
+
+    for out_index, _ in enumerate(keep, start=1):
+        column = get_column_letter(out_index)
+        width = max(len(str(ws.cell(row=r, column=out_index).value or "")) for r in range(1, ws.max_row + 1))
+        ws.column_dimensions[column].width = min(max(width + 2, 12), 42)
+
+
+def _keep_indexes(headers: List[Any], visible_columns: Optional[List[str]]) -> List[int]:
+    if not visible_columns:
+        return list(range(len(headers)))
+    wanted = {str(name) for name in visible_columns}
+    keep = [index for index, name in enumerate(headers) if str(name) in wanted]
+    return keep or list(range(len(headers)))
+
+
+def _unique_sheet_title(name: str, used: set[str]) -> str:
+    base = re.sub(r"[\\/?*\[\]:]", "_", str(name or "query"))[:31] or "query"
+    title = base
+    suffix = 1
+    while title in used:
+        suffix += 1
+        tail = f"_{suffix}"
+        title = base[: 31 - len(tail)] + tail
+    used.add(title)
+    return title
+
+
 def build_display_table(cache: Dict[str, Any]) -> Dict[str, List[List[Any]]]:
     if cache.get("column_labels"):
         return build_meta_table(cache)
-    if cache.get("display_mode") == "key_value":
-        return build_key_value_table(cache.get("rows", []))
     return build_flat_table(cache.get("rows", []))
 
 
@@ -52,38 +127,6 @@ def build_meta_table(cache: Dict[str, Any]) -> Dict[str, List[List[Any]]]:
             data = [item.get("error")] + [""] * max(0, len(labels) - 1)
         data = normalize_length(data, len(labels))
         table_rows.append([item.get("instance"), item.get("env", ""), *data])
-    return {"headers": headers, "rows": table_rows}
-
-
-def build_key_value_table(rows: List[Dict[str, Any]]) -> Dict[str, List[List[Any]]]:
-    keys = []
-    values_by_instance = {}
-    errors = {}
-    instance_keys = []
-    instance_labels = []
-    for index, item in enumerate(rows):
-        instance_key = f"{index}:{item.get('instance', '')}"
-        instance_keys.append(instance_key)
-        instance_labels.append(item.get("instance"))
-        values_by_instance[instance_key] = {}
-        if item.get("error"):
-            errors[instance_key] = item["error"]
-        for data_row in item.get("data") or []:
-            key = data_row[0]
-            if key not in keys:
-                keys.append(key)
-            val = data_row[1] if len(data_row) > 1 else None
-            if val is not None and val != "":
-                values_by_instance[instance_key][key] = val
-            elif key not in values_by_instance[instance_key]:
-                values_by_instance[instance_key][key] = ""
-
-    headers = ["item"] + instance_labels
-    table_rows = []
-    for key in keys:
-        table_rows.append([key] + [values_by_instance.get(instance_key, {}).get(key, errors.get(instance_key, "")) for instance_key in instance_keys])
-    if not keys and errors:
-        table_rows.append(["error"] + [errors.get(instance_key, "") for instance_key in instance_keys])
     return {"headers": headers, "rows": table_rows}
 
 
